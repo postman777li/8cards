@@ -13,8 +13,8 @@
 
 ## 当前进度
 
-- 已完成：02
-- 下一项：03 工程基础结构
+- 已完成：03
+- 下一项：04 UI 视觉原型与设计系统
 - 总任务数：20
 
 ## 阶段一 规则和项目基础
@@ -35,7 +35,7 @@
 
 ## 阶段二 工程和设计基础
 
-- [ ] **03 工程基础结构** `feature/project-scaffold` ← 下一项
+- [x] **03 工程基础结构** `feature/project-scaffold`
   - 窗口提示词：`docs/prompts/task-03-project-scaffold.md`
   - 建立 TypeScript 单仓库。
   - 创建 `apps/web`、`apps/server`、`packages/game-engine`、`packages/shared`、`packages/ui`。
@@ -46,6 +46,7 @@
   - 启动验证：网页开发服务器返回 HTTP 200；服务端 `/health` 返回 `status: ok`。等待总控验收与合并，复选框保持未勾选。
 
 - [ ] **04 UI 视觉原型与设计系统** `design/ui-foundation`
+  - 窗口提示词：`docs/prompts/task-04-ui-foundation.md`
   - 参考成熟斗地主产品的信息结构和交互习惯。
   - 设计原创首页、房间、电脑牌桌和手机横屏牌桌原型。
   - 定义颜色、字体、间距、按钮、面板和卡牌组件规范。

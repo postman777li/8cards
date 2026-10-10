@@ -22,13 +22,17 @@
 - 数据库：开发阶段可使用 SQLite，正式部署使用 PostgreSQL
 - 游戏核心：服务端权威状态机，客户端不得自行决定洗牌、合法出牌或胜负
 - 部署：Docker 化，最终支持域名、HTTPS 和 WSS
-- 仓库：计划托管到 GitHub，尚未创建
+- 工程：pnpm workspace TypeScript 单仓库
+- 前端基础：React 19、Vite 8
+- 服务端基础：Node.js 24 原生 HTTP 健康检查，业务服务尚未实现
+- 质量工具：TypeScript 5.9、Vitest 5、ESLint 10、Prettier 3
+- 仓库：https://github.com/postman777li/8cards
 
-架构仍处于规划状态。创建工程前应再次确认具体框架、包管理器和部署平台。
+工程基础结构已经落地。后续任务必须遵守 `docs/TODO.md` 的顺序和现有 workspace 边界。
 
 ## 当前阶段
 
-当前处于规则确认和项目规划阶段。除文档、原型和用户明确批准的工作外，不得直接开始功能开发。
+任务 03 工程基础结构已验收并合并。当前下一项为任务 04 UI 视觉原型与设计系统；未经总控验收，不得提前开始任务 05 或后续任务。
 
 ## 协作要求
 
