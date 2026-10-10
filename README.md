@@ -4,7 +4,7 @@
 
 GitHub 仓库：https://github.com/postman777li/8cards
 
-当前项目处于规划阶段，尚未开始功能开发。任何开发窗口开始工作前，都必须先阅读 [AGENTS.md](AGENTS.md) 和 [docs/project-status.md](docs/project-status.md)。
+项目已建立工程基础结构，尚未开始游戏业务功能开发。任何开发窗口开始工作前，都必须先阅读 [AGENTS.md](AGENTS.md) 和 [docs/project-status.md](docs/project-status.md)。
 
 ## 文档导航
 
@@ -21,4 +21,25 @@ GitHub 仓库：https://github.com/postman777li/8cards
 ## 当前目标
 
 先冻结规则和第一版产品范围，再创建 GitHub 仓库、交互原型和工程代码。未经项目总控确认，不提前进入功能开发。
+
+## 本地开发
+
+需要 Node.js 24 LTS 和 pnpm 11。首次使用先安装依赖：
+
+```powershell
+pnpm install
+```
+
+常用命令：
+
+```powershell
+pnpm dev          # 同时启动网页与服务端开发进程
+pnpm build        # 构建全部 workspace
+pnpm typecheck    # TypeScript 类型检查
+pnpm lint         # ESLint 静态检查
+pnpm test         # 运行 Vitest 测试
+pnpm format:check # 检查代码格式
+```
+
+网页开发地址默认为 `http://localhost:5173`，服务端健康检查默认为 `http://localhost:3001/health`。
 

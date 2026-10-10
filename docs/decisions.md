@@ -50,6 +50,10 @@
 
 所有人数模式采用同一回合游标规则。防守成功时，原防守者成为下一轮进攻者；防守者收牌时，跳过该玩家的进攻回合，由下一位玩家进攻再下一位玩家。例如 `A → B → C → D` 中 A 进攻 B，B 收牌后由 C 进攻 D，B 防守成功后由 B 进攻 C。
 
+### D013 工程基础采用轻量 TypeScript 单仓库
+
+使用 Node.js 24 LTS、pnpm workspace、TypeScript 5.9、React 19、Vite 8、Vitest 5、ESLint 10 和 Prettier 3。服务端基础骨架使用 Node 原生 HTTP，不在工程初始化阶段引入 Web 框架、WebSocket 或数据库依赖。TypeScript 暂不采用 7.0，因为当前 `typescript-eslint` 尚未声明兼容。
+
 ## 待决定
 
 ### P003 四人具体规则

@@ -42,6 +42,8 @@
   - 配置格式化、静态检查、测试和构建命令。
   - 不实现游戏业务。
   - 完成条件：安装、检查、测试和构建全部通过。
+  - 执行记录：已在任务分支完成；`pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm test`、`pnpm build` 均通过。
+  - 启动验证：网页开发服务器返回 HTTP 200；服务端 `/health` 返回 `status: ok`。等待总控验收与合并，复选框保持未勾选。
 
 - [ ] **04 UI 视觉原型与设计系统** `design/ui-foundation`
   - 参考成熟斗地主产品的信息结构和交互习惯。
