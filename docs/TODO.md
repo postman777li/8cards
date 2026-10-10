@@ -36,6 +36,7 @@
 ## 阶段二 工程和设计基础
 
 - [ ] **03 工程基础结构** `feature/project-scaffold` ← 下一项
+  - 窗口提示词：`docs/prompts/task-03-project-scaffold.md`
   - 建立 TypeScript 单仓库。
   - 创建 `apps/web`、`apps/server`、`packages/game-engine`、`packages/shared`、`packages/ui`。
   - 配置格式化、静态检查、测试和构建命令。
