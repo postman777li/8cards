@@ -43,3 +43,15 @@ pnpm format:check # 检查代码格式
 
 网页开发地址默认为 `http://localhost:5173`，服务端健康检查默认为 `http://localhost:3001/health`。
 
+## UI 原型预览
+
+任务 04 的本地视觉原型包含首页、创建房间、等待房间、游戏牌桌和结算五个场景。运行 `pnpm --filter @8cards/web dev` 后，可通过页面顶部的“原型场景导航”切换，也可直接访问：
+
+- `http://localhost:5173/#/home`
+- `http://localhost:5173/#/create`
+- `http://localhost:5173/#/waiting`
+- `http://localhost:5173/#/table`
+- `http://localhost:5173/#/result`
+
+原型只使用浏览器本地模拟状态，不连接服务端，不包含真实房间、聊天、游戏规则或战绩保存。
+

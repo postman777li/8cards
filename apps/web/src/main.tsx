@@ -1,16 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import '@8cards/ui/styles.css';
+import { App } from './App.js';
 import './styles.css';
-
-function App() {
-  return (
-    <main>
-      <h1>永城八张在线版</h1>
-      <p>工程基础结构已就绪。</p>
-    </main>
-  );
-}
 
 const rootElement = document.querySelector('#root');
 
