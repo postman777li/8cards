@@ -64,7 +64,11 @@ importers:
         specifier: ^8.3.0
         version: 8.3.4(@types/node@26.6.4)(esbuild@0.28.2)(tsx@4.23.15)
 
-  packages/game-engine: {}
+  packages/game-engine:
+    dependencies:
+      '@8cards/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/shared:
     dependencies:

@@ -12,5 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "lint": "eslint .",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@8cards/shared": "workspace:*"
   }
 }
