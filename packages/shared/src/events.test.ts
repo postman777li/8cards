@@ -64,6 +64,13 @@ describe('client protocol validation', () => {
       config: publicSnapshot.room.config,
     },
     { type: 'room.join', ...requestMeta, nickname: '乙', roomCode: 'ABC123' },
+    {
+      type: 'session.resume',
+      ...requestMeta,
+      roomId: 'room-1',
+      playerId: 'p1',
+      reconnectToken: 'a'.repeat(32),
+    },
     { type: 'room.leave', ...requestMeta, expectedStateVersion: 0 },
     {
       type: 'room.ready',
@@ -294,6 +301,7 @@ function clientEventType(event: ClientEvent): string {
   switch (event.type) {
     case 'room.create':
     case 'room.join':
+    case 'session.resume':
     case 'room.leave':
     case 'room.ready':
     case 'room.start':

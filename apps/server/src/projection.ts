@@ -93,6 +93,7 @@ const roles = (authority: AuthorityState, playerId: PlayerId) => {
 const projectGame = (
   authority: AuthorityState,
   roomId: string,
+  turnDeadline: string | null,
 ): GamePublicState => {
   const { state } = authority;
   const winners = winnerIds(authority);
@@ -134,7 +135,7 @@ const projectGame = (
         : (state as ThreePlayerState<PlayerId> | FourPlayerState<PlayerId>)
             .roundAttacker,
     defenderId: state.defender,
-    turnDeadline: null,
+    turnDeadline,
     ...(winners ? { winnerPlayerIds: winners } : {}),
   };
 };
@@ -143,6 +144,7 @@ export const projectPublicSnapshot = (
   room: RoomSnapshot,
   stateVersion: number,
   authority?: AuthorityState,
+  turnDeadline: string | null = null,
 ): PublicSnapshot =>
   publicSnapshotSchema.parse({
     stateVersion,
@@ -154,7 +156,7 @@ export const projectPublicSnapshot = (
       players: room.players,
       spectators: room.spectators,
     },
-    game: authority ? projectGame(authority, room.roomId) : null,
+    game: authority ? projectGame(authority, room.roomId, turnDeadline) : null,
   });
 
 const legalActions = (
@@ -196,12 +198,13 @@ export const projectPlayerView = (
   stateVersion: number,
   playerId: PlayerId,
   authority?: AuthorityState,
+  turnDeadline: string | null = null,
 ): PlayerView => {
   const hand: readonly Card[] = authority?.state.hands.get(playerId) ?? [];
   return playerViewSchema.parse({
     audience: 'player',
     viewerPlayerId: playerId,
-    public: projectPublicSnapshot(room, stateVersion, authority),
+    public: projectPublicSnapshot(room, stateVersion, authority, turnDeadline),
     private: { hand, legalActionTypes: legalActions(authority, playerId) },
   });
 };

@@ -49,7 +49,7 @@ interface Identity {
 interface CachedRequest {
   requestId: RequestId;
   canonical: string;
-  response: IndividualServerEvent;
+  responses: readonly IndividualServerEvent[];
 }
 interface ConnectionState {
   identity?: Identity;
@@ -62,12 +62,28 @@ interface RealtimeRoom {
   stateVersion: number;
   authority?: AuthorityState;
   sockets: Set<WebSocket>;
+  turnDeadline: string | null;
+  timerGeneration: number;
+  timerHandle?: unknown;
+}
+
+export interface RealtimeClock {
+  now(): number;
+  schedule(delayMs: number, callback: () => void): unknown;
+  cancel(handle: unknown): void;
 }
 
 export interface RealtimeOptions {
   roomService?: RoomService;
   random?: () => number;
+  clock?: RealtimeClock;
 }
+
+const systemClock: RealtimeClock = {
+  now: () => Date.now(),
+  schedule: (delay, callback) => setTimeout(callback, delay),
+  cancel: (handle) => clearTimeout(handle as NodeJS.Timeout),
+};
 
 const secureRandom = () => randomInt(0, 0x1_0000_0000) / 0x1_0000_0000;
 const canonicalize = (value: unknown): string => {
@@ -116,12 +132,16 @@ export class RealtimeService {
   readonly webSocketServer: WebSocketServer;
   readonly #roomService: RoomService;
   readonly #random: () => number;
+  readonly #clock: RealtimeClock;
   readonly #connections = new Map<WebSocket, ConnectionState>();
   readonly #rooms = new Map<RoomId, RealtimeRoom>();
+  readonly #currentSockets = new Map<string, WebSocket>();
+  #closing = false;
 
   constructor(options: RealtimeOptions = {}) {
     this.#roomService = options.roomService ?? new RoomService();
     this.#random = options.random ?? secureRandom;
+    this.#clock = options.clock ?? systemClock;
     this.webSocketServer = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_MESSAGE_BYTES,
@@ -147,6 +167,8 @@ export class RealtimeService {
   }
 
   async close(): Promise<void> {
+    this.#closing = true;
+    for (const room of this.#rooms.values()) this.#cancelTimer(room);
     for (const socket of this.webSocketServer.clients) socket.terminate();
     await new Promise<void>((resolve) =>
       this.webSocketServer.close(() => resolve()),
@@ -169,8 +191,28 @@ export class RealtimeService {
     socket.on('error', () => undefined);
     socket.on('close', () => {
       const state = this.#connections.get(socket);
-      if (state?.identity)
-        this.#rooms.get(state.identity.roomId)?.sockets.delete(socket);
+      if (state?.identity) {
+        const room = this.#rooms.get(state.identity.roomId);
+        room?.sockets.delete(socket);
+        const key = this.#identityKey(state.identity);
+        if (
+          !this.#closing &&
+          this.#currentSockets.get(key) === socket &&
+          room
+        ) {
+          this.#currentSockets.delete(key);
+          try {
+            room.snapshot = this.#roomService.markDisconnected({
+              ...state.identity,
+              expectedStateVersion: room.snapshot.stateVersion,
+            });
+            room.stateVersion += 1;
+            this.#broadcast(room);
+          } catch {
+            // A concurrent restore or room removal already superseded this close.
+          }
+        }
+      }
       this.#connections.delete(socket);
     });
   }
@@ -213,7 +255,8 @@ export class RealtimeService {
     const cachedSequence = connection.sequenceByRequestId.get(event.requestId);
     if (cachedSequence !== undefined) {
       const cached = connection.bySequence.get(cachedSequence);
-      if (cached?.canonical === canonical) this.#send(socket, cached.response);
+      if (cached?.canonical === canonical)
+        for (const response of cached.responses) this.#send(socket, response);
       else
         this.#send(
           socket,
@@ -266,10 +309,23 @@ export class RealtimeService {
         );
     }
     connection.nextSequence += 1;
+    const responses: IndividualServerEvent[] = [response];
+    if (credential)
+      responses.push({
+        type: 'session.established',
+        protocolVersion: PROTOCOL_VERSION,
+        roomId: credential.room.roomId,
+        playerId: credential.playerId,
+        reconnectToken: credential.reconnectToken,
+      });
+    if (event.type === 'session.resume' && changedRoom && connection.identity)
+      responses.push(
+        this.#playerState(changedRoom, connection.identity.playerId),
+      );
     connection.bySequence.set(event.actionSequence, {
       requestId: event.requestId,
       canonical,
-      response,
+      responses,
     });
     connection.sequenceByRequestId.set(event.requestId, event.actionSequence);
     while (connection.bySequence.size > CACHE_LIMIT) {
@@ -279,20 +335,49 @@ export class RealtimeService {
       if (removed) connection.sequenceByRequestId.delete(removed.requestId);
     }
 
-    this.#send(socket, response);
-    if (credential) {
-      this.#send(socket, {
-        type: 'session.established',
-        protocolVersion: PROTOCOL_VERSION,
-        roomId: credential.room.roomId,
-        playerId: credential.playerId,
-        reconnectToken: credential.reconnectToken,
-      });
-    }
-    if (changedRoom) this.#broadcast(changedRoom);
+    for (const item of responses) this.#send(socket, item);
+    if (changedRoom)
+      this.#broadcast(
+        changedRoom,
+        event.type === 'session.resume' ? socket : undefined,
+      );
   }
 
   #execute(socket: WebSocket, connection: ConnectionState, event: ClientEvent) {
+    if (event.type === 'session.resume') {
+      if (connection.identity || event.actionSequence !== 1)
+        throw new RoomServiceError(
+          'UNAUTHORIZED',
+          '恢复连接必须是未绑定的新连接',
+        );
+      const runtime = this.#rooms.get(event.roomId);
+      if (!runtime) throw new RoomServiceError('UNAUTHORIZED', '会话凭证无效');
+      const previousRoomVersion = runtime.snapshot.stateVersion;
+      const session = this.#roomService.restoreSession(event);
+      runtime.snapshot = session.room;
+      if (session.stateVersion !== previousRoomVersion)
+        runtime.stateVersion += 1;
+      const identity = {
+        roomId: session.room.roomId,
+        playerId: session.playerId,
+        reconnectToken: session.reconnectToken,
+      };
+      connection.identity = identity;
+      runtime.sockets.add(socket);
+      const key = this.#identityKey(identity);
+      const oldSocket = this.#currentSockets.get(key);
+      this.#currentSockets.set(key, socket);
+      if (oldSocket && oldSocket !== socket) {
+        runtime.sockets.delete(oldSocket);
+        delete this.#connections.get(oldSocket)!.identity;
+        oldSocket.close(4001, 'session replaced');
+      }
+      return {
+        stateVersion: runtime.stateVersion,
+        credential: session,
+        changedRoom: runtime,
+      };
+    }
     if (event.type === 'room.create' || event.type === 'room.join') {
       if (connection.identity)
         throw new RoomServiceError('UNAUTHORIZED', '连接已经绑定玩家身份');
@@ -304,6 +389,8 @@ export class RealtimeService {
         snapshot: session.room,
         stateVersion: session.stateVersion,
         sockets: new Set<WebSocket>(),
+        turnDeadline: null,
+        timerGeneration: 0,
       };
       runtime.snapshot = session.room;
       runtime.stateVersion = session.stateVersion;
@@ -314,6 +401,7 @@ export class RealtimeService {
         playerId: session.playerId,
         reconnectToken: session.reconnectToken,
       };
+      this.#currentSockets.set(this.#identityKey(connection.identity), socket);
       return {
         stateVersion: runtime.stateVersion,
         credential: session,
@@ -352,6 +440,7 @@ export class RealtimeService {
         expectedStateVersion: event.expectedStateVersion,
       });
       runtime.sockets.delete(socket);
+      this.#currentSockets.delete(this.#identityKey(identity));
       delete connection.identity;
       if (!snapshot) this.#rooms.delete(identity.roomId);
       else {
@@ -401,17 +490,22 @@ export class RealtimeService {
       };
       runtime.stateVersion = started.stateVersion;
       runtime.authority = authority;
+      this.#scheduleTurn(runtime);
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
     if (event.type === 'game.action') {
       if (!runtime.authority)
         throw new RoomServiceError('INVALID_INPUT', '游戏尚未开始');
+      const consumesTurn = event.action.kind !== 'exchange-trump-two';
       runtime.authority = this.#applyAction(
         runtime.authority,
         identity.playerId,
         event.action,
       );
       runtime.stateVersion += 1;
+      if (consumesTurn) this.#scheduleTurn(runtime);
+      else if (runtime.authority.state.phase === 'finished')
+        this.#cancelTimer(runtime);
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
     throw new RoomServiceError('INVALID_INPUT', '不支持的操作');
@@ -479,22 +573,73 @@ export class RealtimeService {
     };
   }
 
-  #broadcast(room: RealtimeRoom) {
+  #broadcast(room: RealtimeRoom, except?: WebSocket) {
     for (const socket of room.sockets) {
       const identity = this.#connections.get(socket)?.identity;
       if (!identity || socket.readyState !== WebSocket.OPEN) continue;
-      this.#send(socket, {
-        type: 'state.player',
-        protocolVersion: PROTOCOL_VERSION,
-        stateVersion: room.stateVersion,
-        view: projectPlayerView(
-          room.snapshot,
-          room.stateVersion,
-          identity.playerId,
-          room.authority,
-        ),
-      });
+      if (socket !== except)
+        this.#send(socket, this.#playerState(room, identity.playerId));
     }
+  }
+
+  #playerState(room: RealtimeRoom, playerId: PlayerId): IndividualServerEvent {
+    return {
+      type: 'state.player',
+      protocolVersion: PROTOCOL_VERSION,
+      stateVersion: room.stateVersion,
+      view: projectPlayerView(
+        room.snapshot,
+        room.stateVersion,
+        playerId,
+        room.authority,
+        room.turnDeadline,
+      ),
+    };
+  }
+
+  #identityKey(identity: Pick<Identity, 'roomId' | 'playerId'>) {
+    return `${identity.roomId}:${identity.playerId}`;
+  }
+
+  #cancelTimer(room: RealtimeRoom) {
+    room.timerGeneration += 1;
+    if (room.timerHandle !== undefined) this.#clock.cancel(room.timerHandle);
+    room.timerHandle = undefined;
+    room.turnDeadline = null;
+  }
+
+  #scheduleTurn(room: RealtimeRoom) {
+    if (!room.authority || room.authority.state.phase === 'finished') {
+      this.#cancelTimer(room);
+      return;
+    }
+    if (room.timerHandle !== undefined) this.#clock.cancel(room.timerHandle);
+    const generation = ++room.timerGeneration;
+    const expectedVersion = room.stateVersion;
+    const delay = room.snapshot.config.turnTimeoutSeconds * 1000;
+    room.turnDeadline = new Date(this.#clock.now() + delay).toISOString();
+    room.timerHandle = this.#clock.schedule(delay, () => {
+      if (
+        room.timerGeneration !== generation ||
+        room.stateVersion !== expectedVersion ||
+        !room.authority
+      )
+        return;
+      const state = room.authority.state;
+      if (state.phase === 'finished') return this.#cancelTimer(room);
+      try {
+        room.authority = this.#applyAction(
+          room.authority,
+          state.phase === 'awaiting-defense' ? state.defender : state.actor,
+          { kind: state.phase === 'awaiting-defense' ? 'collect' : 'pass' },
+        );
+        room.stateVersion += 1;
+        this.#scheduleTurn(room);
+        this.#broadcast(room);
+      } catch {
+        this.#cancelTimer(room);
+      }
+    });
   }
 
   #send(socket: WebSocket, event: IndividualServerEvent) {

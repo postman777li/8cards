@@ -44,6 +44,13 @@ const joinRoomEventSchema = z.strictObject({
   nickname: nicknameSchema,
   roomCode: roomCodeSchema,
 });
+const resumeSessionEventSchema = z.strictObject({
+  type: z.literal('session.resume'),
+  ...requestMeta,
+  roomId: roomIdSchema,
+  playerId: playerIdSchema,
+  reconnectToken: z.string().min(32).max(256),
+});
 const leaveRoomEventSchema = z.strictObject({
   type: z.literal('room.leave'),
   ...versionedRequestMeta,
@@ -91,6 +98,7 @@ const gameActionEventSchema = z.strictObject({
 export const clientEventSchema = z.discriminatedUnion('type', [
   createRoomEventSchema,
   joinRoomEventSchema,
+  resumeSessionEventSchema,
   leaveRoomEventSchema,
   readyEventSchema,
   startEventSchema,
