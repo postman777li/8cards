@@ -204,6 +204,13 @@ export function GameTable({
   const [pendingVersion, setPendingVersion] = useState<number>();
   const [actionError, setActionError] = useState('');
   const [now, setNow] = useState(() => Date.now());
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatText, setChatText] = useState('');
+  const [messages, setMessages] = useState<
+    readonly import('@8cards/shared').ChatMessage[]
+  >([]);
+  const [history, setHistory] =
+    useState<import('./realtime-client.js').VisitorHistory>();
   const hand = useMemo(() => sortHand(view.private.hand), [view.private.hand]);
   const pairs = useMemo(() => pairTable(game.table), [game.table]);
   const legal = useMemo(
@@ -254,6 +261,16 @@ export function GameTable({
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [game.turnDeadline]);
+  useEffect(() => {
+    if (!connection) return;
+    const offChat = connection.subscribeChat(setMessages);
+    const offHistory = connection.subscribeHistory(setHistory);
+    if (game.phase === 'finished') void connection.history();
+    return () => {
+      offChat();
+      offHistory();
+    };
+  }, [connection, game.phase]);
 
   const submit = async (action: GameAction) => {
     if (blocked || !connection) return;
@@ -321,6 +338,13 @@ export function GameTable({
               ? '正在恢复'
               : '连接中断'}
         </Badge>
+        <button
+          className="social-toggle"
+          type="button"
+          onClick={() => setChatOpen((value) => !value)}
+        >
+          聊天 {messages.length ? `(${messages.length})` : ''}
+        </button>
         <p className="orientation-tip">
           当前为竖屏布局，旋转至横屏可获得更开阔的牌桌视野。
         </p>
@@ -351,6 +375,62 @@ export function GameTable({
           );
         })}
       </div>
+
+      <aside
+        className={`social-panel ${chatOpen ? 'open' : ''}`}
+        aria-label="房间聊天"
+      >
+        <header>
+          <strong>房间聊天</strong>
+          <button type="button" onClick={() => setChatOpen(false)}>
+            ×
+          </button>
+        </header>
+        <div className="chat-messages" aria-live="polite">
+          {messages.length ? (
+            messages.map((item) => (
+              <p key={item.messageId}>
+                <b>{item.senderNickname}</b>
+                <span>{item.message}</span>
+                <time>
+                  {new Date(item.sentAt).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </time>
+              </p>
+            ))
+          ) : (
+            <small>还没有消息，打个招呼吧。</small>
+          )}
+        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const text = chatText.trim();
+            if (!text || !connection) return;
+            setChatText('');
+            void connection
+              .chat(text)
+              .catch((caught) =>
+                setActionError(
+                  caught instanceof Error ? caught.message : '发送失败',
+                ),
+              );
+          }}
+        >
+          <input
+            aria-label="聊天内容"
+            maxLength={300}
+            value={chatText}
+            onChange={(event) => setChatText(event.target.value)}
+            placeholder="输入纯文字消息"
+          />
+          <Button type="submit" disabled={!chatText.trim()}>
+            发送
+          </Button>
+        </form>
+      </aside>
 
       <div className="center-table">
         <div
@@ -484,10 +564,35 @@ export function GameTable({
           <Panel>
             <p className="eyebrow">本局结束</p>
             <h2>{result.title}</h2>
-            <p>
-              {result.detail}
-              完整战绩与结算详情将在任务 18 提供。
-            </p>
+            <p>{result.detail}</p>
+            <div className="settlement-participants">
+              {view.public.room.players.map((player) => (
+                <span key={player.playerId}>
+                  {player.nickname} ·{' '}
+                  {game.winnerPlayerIds?.includes(player.playerId)
+                    ? '胜'
+                    : game.loserPlayerIds?.includes(player.playerId)
+                      ? '负'
+                      : view.public.room.config.playerCount === 2
+                        ? '负'
+                        : '未决'}
+                </span>
+              ))}
+            </div>
+            {history && (
+              <p className="history-summary">
+                当前访客累计 {history.stats.games} 局 · {history.stats.wins} 胜
+                · {history.stats.losses} 负
+                {history.stats.unresolved
+                  ? ` · ${history.stats.unresolved} 未决`
+                  : ''}
+              </p>
+            )}
+            {history?.persistenceStatus === 'pending' && (
+              <p className="error">
+                对局已权威结束，但战绩仍在等待保存，请稍后重试查询。
+              </p>
+            )}
             <Button onClick={onSafeReturn}>返回安全首页</Button>
           </Panel>
         </div>

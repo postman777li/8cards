@@ -4,12 +4,14 @@ import {
   roomNameSchema,
   type PlayerId,
   type RoomId,
+  type VisitorId,
 } from '@8cards/shared';
 
 export const NICKNAME_STORAGE_KEY = '8cards:lobby:nickname';
 export const SETTINGS_STORAGE_KEY = '8cards:lobby:settings';
 const SESSION_STORAGE_PREFIX = '8cards:session:';
 const CURRENT_SESSION_STORAGE_KEY = '8cards:session:current';
+export const VISITOR_STORAGE_KEY = '8cards:visitor:id';
 
 export interface LobbySettings {
   soundEffects: boolean;
@@ -21,6 +23,16 @@ export interface StoredSession {
   roomId: RoomId;
   playerId: PlayerId;
   reconnectToken: string;
+  visitorId?: VisitorId | undefined;
+}
+
+export function getOrCreateVisitorId(storage: Storage): VisitorId {
+  const existing = storage.getItem(VISITOR_STORAGE_KEY)?.trim();
+  if (existing) return existing as VisitorId;
+  const value =
+    `visitor-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}` as VisitorId;
+  storage.setItem(VISITOR_STORAGE_KEY, value);
+  return value;
 }
 
 export const defaultSettings: LobbySettings = {
@@ -98,6 +110,7 @@ export function saveSession(storage: Storage, session: StoredSession): void {
       roomId: session.roomId,
       playerId: session.playerId,
       reconnectToken: session.reconnectToken,
+      ...(session.visitorId ? { visitorId: session.visitorId } : {}),
     } satisfies StoredSession),
   );
   storage.setItem(CURRENT_SESSION_STORAGE_KEY, key);
@@ -124,6 +137,9 @@ export function loadCurrentSession(storage: Storage): StoredSession | null {
           roomId: value.roomId,
           playerId: value.playerId,
           reconnectToken: value.reconnectToken,
+          ...(typeof value.visitorId === 'string'
+            ? { visitorId: value.visitorId as VisitorId }
+            : {}),
         }
       : null;
   } catch {

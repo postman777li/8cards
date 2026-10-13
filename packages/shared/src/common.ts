@@ -9,12 +9,14 @@ export const gameIdSchema = identifier('GameId');
 export const connectionIdSchema = identifier('ConnectionId');
 export const requestIdSchema = identifier('RequestId');
 export const spectatorIdSchema = identifier('SpectatorId');
+export const visitorIdSchema = identifier('VisitorId');
 export type PlayerId = z.infer<typeof playerIdSchema>;
 export type RoomId = z.infer<typeof roomIdSchema>;
 export type GameId = z.infer<typeof gameIdSchema>;
 export type ConnectionId = z.infer<typeof connectionIdSchema>;
 export type RequestId = z.infer<typeof requestIdSchema>;
 export type SpectatorId = z.infer<typeof spectatorIdSchema>;
+export type VisitorId = z.infer<typeof visitorIdSchema>;
 
 export const protocolVersionSchema = z.literal(1);
 export const PROTOCOL_VERSION = protocolVersionSchema.value;
@@ -36,6 +38,9 @@ export const errorCodeSchema = z.enum([
   'STALE_STATE',
   'DUPLICATE_REQUEST',
   'INTERNAL_ERROR',
+  'RATE_LIMITED',
+  'SPECTATOR_FULL',
+  'PERSISTENCE_PENDING',
 ]);
 export const protocolErrorSchema = z.strictObject({
   code: errorCodeSchema,

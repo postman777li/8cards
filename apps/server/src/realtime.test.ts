@@ -214,6 +214,79 @@ describe('HTTP and WebSocket transport', () => {
 });
 
 describe('real multi-client games', () => {
+  it('isolates spectators, restores them, and applies independent chat limits', async () => {
+    const { wsUrl } = await start();
+    const { all, startedVersion } = await setupGame(2, wsUrl);
+    const playerState = await all[0]!.waitFor(
+      (event) =>
+        event.type === 'state.player' && event.stateVersion === startedVersion,
+    );
+    const room = (playerState.view as { public: { room: { code: string } } })
+      .public.room;
+    const spectator = await connect(wsUrl);
+    await request(spectator, {
+      type: 'spectate.join',
+      ...meta('watch', 1),
+      nickname: '<img onerror=x>',
+      roomCode: room.code,
+      visitorId: 'visitor-watch',
+    });
+    const credential = await spectator.waitFor(
+      (event) => event.type === 'spectator.established',
+    );
+    const view = await spectator.waitFor(
+      (event) => event.type === 'state.spectator',
+    );
+    expect(view.view).not.toHaveProperty('private');
+    expect(JSON.stringify(view)).not.toContain('reconnectToken');
+    expect(JSON.stringify(view)).not.toContain('stock":[');
+    const forbidden = await request(spectator, {
+      type: 'game.action',
+      ...meta('forbidden', 2),
+      expectedStateVersion: view.stateVersion,
+      action: { kind: 'pass' },
+    });
+    expect((forbidden.error as { code: string }).code).toBe('UNAUTHORIZED');
+    for (let index = 0; index < 5; index += 1) {
+      const sent = await request(spectator, {
+        type: 'chat.send',
+        ...meta(`chat-${index}`, index + 3),
+        expectedStateVersion: view.stateVersion,
+        message: `<b>消息 ${index}</b>`,
+      });
+      expect(sent.type).toBe('response.ok');
+    }
+    const limited = await request(spectator, {
+      type: 'chat.send',
+      ...meta('chat-limit', 8),
+      expectedStateVersion: view.stateVersion,
+      message: '第六条',
+    });
+    expect((limited.error as { code: string }).code).toBe('RATE_LIMITED');
+    expect(
+      all[0]!.events.some(
+        (event) =>
+          event.type === 'chat.message' && event.message === '<b>消息 0</b>',
+      ),
+    ).toBe(true);
+    await spectator.close();
+    clients.delete(spectator);
+    const resumed = await connect(wsUrl);
+    await request(resumed, {
+      type: 'spectate.resume',
+      ...meta('watch-resume', 1),
+      roomId: credential.roomId,
+      spectatorId: credential.spectatorId,
+      reconnectToken: credential.reconnectToken,
+      visitorId: 'visitor-watch',
+    });
+    await resumed.waitFor((event) => event.type === 'state.spectator');
+    const history = await resumed.waitFor(
+      (event) => event.type === 'chat.history',
+    );
+    expect(history.messages as unknown[]).toHaveLength(5);
+    expect(resumed.raw.join('')).not.toContain('"private"');
+  });
   it('validates start eligibility before initialization and preserves state on every failure', async () => {
     const { wsUrl } = await start();
     const host = await connect(wsUrl);

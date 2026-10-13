@@ -8,6 +8,11 @@ import {
   type PlayerView,
   type ProtocolError,
   type RoomId,
+  type VisitorId,
+  type ChatMessage,
+  type GameRecord,
+  type SpectatorId,
+  type SpectatorView,
 } from '@8cards/shared';
 import type { StoredSession } from './lobby.js';
 
@@ -17,8 +22,9 @@ export type LobbyRequest =
       nickname: string;
       roomName: string;
       playerCount: 2 | 3 | 4;
+      visitorId?: VisitorId;
     }
-  | { kind: 'join'; nickname: string; roomCode: string };
+  | { kind: 'join'; nickname: string; roomCode: string; visitorId?: VisitorId };
 type Options = {
   url: string;
   createSocket?: (url: string) => WebSocket;
@@ -29,13 +35,42 @@ export interface LobbyConnection {
   roomId: RoomId;
   playerId: PlayerId;
   reconnectToken: string;
+  visitorId: VisitorId | undefined;
   view: PlayerView;
   socket: WebSocket;
   ready(value: boolean): Promise<void>;
   start(): Promise<void>;
   leave(): Promise<void>;
   action(value: GameAction): Promise<void>;
+  chat(message: string): Promise<void>;
+  history(): Promise<void>;
+  subscribeChat(
+    listener: (messages: readonly ChatMessage[]) => void,
+  ): () => void;
+  subscribeHistory(listener: (value: VisitorHistory) => void): () => void;
   subscribe(listener: (view: PlayerView) => void): () => void;
+  onDisconnect(listener: () => void): () => void;
+  close(): void;
+}
+export interface VisitorHistory {
+  stats: { games: number; wins: number; losses: number; unresolved: number };
+  recent: GameRecord[];
+  persistenceStatus?: 'saved' | 'pending' | undefined;
+}
+export interface SpectatorConnection {
+  roomId: RoomId;
+  spectatorId: SpectatorId;
+  reconnectToken: string;
+  visitorId: VisitorId;
+  view: SpectatorView;
+  socket: WebSocket;
+  chat(message: string): Promise<void>;
+  history(): Promise<void>;
+  subscribe(listener: (view: SpectatorView) => void): () => void;
+  subscribeChat(
+    listener: (messages: readonly ChatMessage[]) => void,
+  ): () => void;
+  subscribeHistory(listener: (value: VisitorHistory) => void): () => void;
   onDisconnect(listener: () => void): () => void;
   close(): void;
 }
@@ -65,6 +100,22 @@ export function resolveWebSocketUrl(
 const requestId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const chatFromEvent = (
+  event: Extract<
+    import('@8cards/shared').ServerEvent,
+    { type: 'chat.message' }
+  >,
+): ChatMessage => ({
+  messageId: event.messageId,
+  senderNickname: event.senderNickname,
+  message: event.message,
+  sentAt: event.sentAt,
+  chatVersion: event.chatVersion,
+  ...(event.senderPlayerId ? { senderPlayerId: event.senderPlayerId } : {}),
+  ...(event.senderSpectatorId
+    ? { senderSpectatorId: event.senderSpectatorId }
+    : {}),
+});
 
 class LiveConnection implements LobbyConnection {
   #sequence = 2;
@@ -74,11 +125,16 @@ class LiveConnection implements LobbyConnection {
   >();
   #views = new Set<(view: PlayerView) => void>();
   #closes = new Set<() => void>();
+  #chatListeners = new Set<(messages: readonly ChatMessage[]) => void>();
+  #historyListeners = new Set<(value: VisitorHistory) => void>();
+  #messages: ChatMessage[] = [];
+  #blockingPending = 0;
   #closed = false;
   constructor(
     readonly roomId: RoomId,
     readonly playerId: PlayerId,
     public reconnectToken: string,
+    readonly visitorId: VisitorId | undefined,
     public view: PlayerView,
     readonly socket: WebSocket,
   ) {
@@ -98,6 +154,21 @@ class LiveConnection implements LobbyConnection {
   action(value: GameAction) {
     return this.#send('game.action', { action: value });
   }
+  chat(message: string) {
+    return this.#send('chat.send', { message }, false);
+  }
+  history() {
+    return this.#send('history.get', {}, false);
+  }
+  subscribeChat(listener: (messages: readonly ChatMessage[]) => void) {
+    this.#chatListeners.add(listener);
+    listener(this.#messages);
+    return () => this.#chatListeners.delete(listener);
+  }
+  subscribeHistory(listener: (value: VisitorHistory) => void) {
+    this.#historyListeners.add(listener);
+    return () => this.#historyListeners.delete(listener);
+  }
   subscribe(listener: (view: PlayerView) => void) {
     this.#views.add(listener);
     return () => this.#views.delete(listener);
@@ -114,10 +185,17 @@ class LiveConnection implements LobbyConnection {
     if (this.socket.readyState < 2) this.socket.close();
   }
   #send(
-    type: 'room.ready' | 'room.start' | 'room.leave' | 'game.action',
-    body: { ready?: boolean; action?: GameAction },
+    type:
+      | 'room.ready'
+      | 'room.start'
+      | 'room.leave'
+      | 'game.action'
+      | 'chat.send'
+      | 'history.get',
+    body: { ready?: boolean; action?: GameAction; message?: string },
+    blocking = true,
   ) {
-    if (this.#closed || this.#pending.size)
+    if (this.#closed || (blocking && this.#blockingPending > 0))
       return Promise.reject(new LobbyConnectionError('操作正在处理中'));
     const id = requestId();
     const event = parseClientEvent({
@@ -125,11 +203,23 @@ class LiveConnection implements LobbyConnection {
       protocolVersion: PROTOCOL_VERSION,
       requestId: id,
       actionSequence: this.#sequence++,
-      expectedStateVersion: this.view.public.stateVersion,
+      ...(type === 'history.get'
+        ? {}
+        : { expectedStateVersion: this.view.public.stateVersion }),
       ...body,
     });
     return new Promise<void>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      if (blocking) this.#blockingPending += 1;
+      this.#pending.set(id, {
+        resolve: () => {
+          if (blocking) this.#blockingPending -= 1;
+          resolve();
+        },
+        reject: (error) => {
+          if (blocking) this.#blockingPending -= 1;
+          reject(error);
+        },
+      });
       this.socket.send(JSON.stringify(event));
     });
   }
@@ -147,6 +237,27 @@ class LiveConnection implements LobbyConnection {
       return;
     }
     const event = parsed.data;
+    if (event.type === 'chat.message') {
+      if (!this.#messages.some((item) => item.messageId === event.messageId)) {
+        const message = chatFromEvent(event);
+        this.#messages = [...this.#messages, message]
+          .sort((a, b) => a.chatVersion - b.chatVersion)
+          .slice(-100);
+        for (const listener of this.#chatListeners) listener(this.#messages);
+      }
+      return;
+    }
+    if (event.type === 'chat.history') {
+      this.#messages = [...event.messages].sort(
+        (a, b) => a.chatVersion - b.chatVersion,
+      );
+      for (const listener of this.#chatListeners) listener(this.#messages);
+      return;
+    }
+    if (event.type === 'history.result') {
+      for (const listener of this.#historyListeners) listener(event);
+      return;
+    }
     if (event.type === 'state.player') {
       if (
         event.view.viewerPlayerId !== this.playerId ||
@@ -225,6 +336,7 @@ function handshake(event: ClientEvent, options: Options) {
           credential.roomId,
           credential.playerId,
           credential.reconnectToken,
+          credential.visitorId,
           view,
           socket,
         ),
@@ -299,12 +411,14 @@ export function connectToLobby(request: LobbyRequest, options: Options) {
               allowChat: true,
               turnTimeoutSeconds: 20,
             },
+            ...(request.visitorId ? { visitorId: request.visitorId } : {}),
           }
         : {
             type: 'room.join',
             ...base,
             nickname: request.nickname,
             roomCode: request.roomCode,
+            ...(request.visitorId ? { visitorId: request.visitorId } : {}),
           },
     ),
     options,
@@ -319,6 +433,239 @@ export function resumeLobby(session: StoredSession, options: Options) {
       requestId: requestId(),
       actionSequence: 1,
       ...session,
+    }),
+    options,
+  );
+}
+
+class LiveSpectator implements SpectatorConnection {
+  #sequence = 2;
+  #pending = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
+  #views = new Set<(view: SpectatorView) => void>();
+  #chats = new Set<(messages: readonly ChatMessage[]) => void>();
+  #histories = new Set<(value: VisitorHistory) => void>();
+  #closes = new Set<() => void>();
+  #messages: ChatMessage[] = [];
+  constructor(
+    readonly roomId: RoomId,
+    readonly spectatorId: SpectatorId,
+    public reconnectToken: string,
+    readonly visitorId: VisitorId,
+    public view: SpectatorView,
+    readonly socket: WebSocket,
+  ) {
+    socket.onmessage = ({ data }) => this.#receive(data);
+    socket.onerror = socket.onclose = () => {
+      for (const listener of this.#closes) listener();
+    };
+  }
+  chat(message: string) {
+    return this.#send('chat.send', {
+      message,
+      expectedStateVersion: this.view.public.stateVersion,
+    });
+  }
+  history() {
+    return this.#send('history.get', {});
+  }
+  subscribe(listener: (view: SpectatorView) => void) {
+    this.#views.add(listener);
+    return () => this.#views.delete(listener);
+  }
+  subscribeChat(listener: (messages: readonly ChatMessage[]) => void) {
+    this.#chats.add(listener);
+    listener(this.#messages);
+    return () => this.#chats.delete(listener);
+  }
+  subscribeHistory(listener: (value: VisitorHistory) => void) {
+    this.#histories.add(listener);
+    return () => this.#histories.delete(listener);
+  }
+  onDisconnect(listener: () => void) {
+    this.#closes.add(listener);
+    return () => this.#closes.delete(listener);
+  }
+  close() {
+    if (this.socket.readyState < 2) this.socket.close();
+  }
+  #send(type: 'chat.send' | 'history.get', body: Record<string, unknown>) {
+    const id = requestId();
+    const event = parseClientEvent({
+      type,
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: id,
+      actionSequence: this.#sequence++,
+      ...body,
+    });
+    return new Promise<void>((resolve, reject) => {
+      this.#pending.set(id, { resolve, reject });
+      this.socket.send(JSON.stringify(event));
+    });
+  }
+  #receive(data: unknown) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(String(data));
+    } catch {
+      this.close();
+      return;
+    }
+    const parsed = safeParseServerEvent(raw);
+    if (!parsed.success) {
+      this.close();
+      return;
+    }
+    const event = parsed.data;
+    if (
+      event.type === 'state.spectator' &&
+      event.view.public.room.roomId === this.roomId &&
+      event.stateVersion >= this.view.public.stateVersion
+    ) {
+      this.view = event.view;
+      for (const listener of this.#views) listener(event.view);
+      return;
+    }
+    if (event.type === 'chat.message') {
+      if (!this.#messages.some((item) => item.messageId === event.messageId))
+        this.#messages = [...this.#messages, chatFromEvent(event)]
+          .sort((a, b) => a.chatVersion - b.chatVersion)
+          .slice(-100);
+      for (const listener of this.#chats) listener(this.#messages);
+      return;
+    }
+    if (event.type === 'chat.history') {
+      this.#messages = [...event.messages];
+      for (const listener of this.#chats) listener(this.#messages);
+      return;
+    }
+    if (event.type === 'history.result') {
+      for (const listener of this.#histories) listener(event);
+      return;
+    }
+    if (event.type === 'response.ok' || event.type === 'response.error') {
+      const pending = this.#pending.get(event.requestId);
+      if (!pending) return;
+      this.#pending.delete(event.requestId);
+      if (event.type === 'response.ok') pending.resolve();
+      else
+        pending.reject(
+          new LobbyConnectionError(event.error.message, event.error),
+        );
+    }
+  }
+}
+
+function spectatorHandshake(event: ClientEvent, options: Options) {
+  const socket = (options.createSocket ?? ((url) => new WebSocket(url)))(
+    options.url,
+  );
+  let ok = false;
+  let credential:
+    | Extract<
+        import('@8cards/shared').ServerEvent,
+        { type: 'spectator.established' }
+      >
+    | undefined;
+  let view: SpectatorView | undefined;
+  let settled = false;
+  let rejectPromise: (error: Error) => void = () => undefined;
+  const promise = new Promise<SpectatorConnection>((resolve, reject) => {
+    rejectPromise = reject;
+    const complete = () => {
+      if (!settled && ok && credential && view) {
+        settled = true;
+        clearTimeout(timer);
+        socket.onopen =
+          socket.onmessage =
+          socket.onerror =
+          socket.onclose =
+            null;
+        resolve(
+          new LiveSpectator(
+            credential.roomId,
+            credential.spectatorId,
+            credential.reconnectToken,
+            credential.visitorId,
+            view,
+            socket,
+          ),
+        );
+      }
+    };
+    socket.onopen = () => socket.send(JSON.stringify(event));
+    socket.onerror = socket.onclose = () => {
+      if (!settled) reject(new LobbyConnectionError('观战连接中断'));
+    };
+    socket.onmessage = ({ data }) => {
+      const parsed = safeParseServerEvent(JSON.parse(String(data)));
+      if (!parsed.success) return;
+      const item = parsed.data;
+      if (item.type === 'response.error' && item.requestId === event.requestId)
+        reject(new LobbyConnectionError(item.error.message, item.error));
+      else if (
+        item.type === 'response.ok' &&
+        item.requestId === event.requestId
+      )
+        ok = true;
+      else if (item.type === 'spectator.established') credential = item;
+      else if (item.type === 'state.spectator') view = item.view;
+      complete();
+    };
+  });
+  const timer = setTimeout(() => {
+    if (!settled) {
+      settled = true;
+      socket.close();
+      rejectPromise(new LobbyConnectionError('观战连接超时'));
+    }
+  }, options.timeoutMs ?? 10_000);
+  return {
+    promise,
+    cancel: () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        socket.close();
+        rejectPromise(new LobbyConnectionError('操作已取消'));
+      }
+    },
+  };
+}
+
+export function spectateRoom(
+  input: { nickname: string; roomCode: string; visitorId: VisitorId },
+  options: Options,
+) {
+  return spectatorHandshake(
+    parseClientEvent({
+      type: 'spectate.join',
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: requestId(),
+      actionSequence: 1,
+      ...input,
+    }),
+    options,
+  );
+}
+export function resumeSpectator(
+  input: {
+    roomId: RoomId;
+    spectatorId: SpectatorId;
+    reconnectToken: string;
+    visitorId: VisitorId;
+  },
+  options: Options,
+) {
+  return spectatorHandshake(
+    parseClientEvent({
+      type: 'spectate.resume',
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: requestId(),
+      actionSequence: 1,
+      ...input,
     }),
     options,
   );

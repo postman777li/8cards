@@ -1,9 +1,9 @@
-import { randomInt } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
 import {
   PROTOCOL_VERSION,
-  individualServerEventSchema,
+  serverEventSchema,
   requestIdSchema,
   safeParseClientEvent,
   type ClientEvent,
@@ -12,6 +12,11 @@ import {
   type PlayerId,
   type RequestId,
   type RoomId,
+  type SpectatorId,
+  type VisitorId,
+  type ChatMessage,
+  type ServerEvent,
+  type GameRecord,
 } from '@8cards/shared';
 import {
   FourPlayerEngineError,
@@ -30,22 +35,38 @@ import {
 } from '@8cards/game-engine';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import { projectPlayerView, type AuthorityState } from './projection.js';
+import {
+  projectPlayerView,
+  projectSpectatorView,
+  type AuthorityState,
+} from './projection.js';
 import {
   RoomService,
   RoomServiceError,
   type PlayerSession,
   type RoomSnapshot,
 } from './room-service.js';
+import { SqliteHistoryStore, type HistoryStore } from './history-store.js';
+import { settlementOutcome } from './settlement.js';
 
 const CACHE_LIMIT = 64;
 export const MAX_MESSAGE_BYTES = 16 * 1024;
 
-interface Identity {
+interface PlayerIdentity {
+  kind: 'player';
   roomId: RoomId;
   playerId: PlayerId;
   reconnectToken: string;
+  visitorId: VisitorId;
 }
+interface SpectatorIdentity {
+  kind: 'spectator';
+  roomId: RoomId;
+  spectatorId: SpectatorId;
+  reconnectToken: string;
+  visitorId: VisitorId;
+}
+type Identity = PlayerIdentity | SpectatorIdentity;
 interface CachedRequest {
   requestId: RequestId;
   canonical: string;
@@ -56,6 +77,14 @@ interface ConnectionState {
   nextSequence: number;
   bySequence: Map<number, CachedRequest>;
   sequenceByRequestId: Map<RequestId, number>;
+  chatSentAt: number[];
+}
+interface SpectatorRecord {
+  spectatorId: SpectatorId;
+  nickname: string;
+  tokenDigest: string;
+  visitorId: VisitorId;
+  connection: 'online' | 'disconnected';
 }
 interface RealtimeRoom {
   snapshot: RoomSnapshot;
@@ -65,6 +94,12 @@ interface RealtimeRoom {
   turnDeadline: string | null;
   timerGeneration: number;
   timerHandle?: unknown;
+  spectators: Map<SpectatorId, SpectatorRecord>;
+  chat: ChatMessage[];
+  chatVersion: number;
+  startedAt?: string;
+  settled: boolean;
+  visitorByPlayer: Map<PlayerId, VisitorId>;
 }
 
 export interface RealtimeClock {
@@ -77,6 +112,7 @@ export interface RealtimeOptions {
   roomService?: RoomService;
   random?: () => number;
   clock?: RealtimeClock;
+  historyStore?: HistoryStore;
 }
 
 const systemClock: RealtimeClock = {
@@ -133,6 +169,7 @@ export class RealtimeService {
   readonly #roomService: RoomService;
   readonly #random: () => number;
   readonly #clock: RealtimeClock;
+  readonly #history: HistoryStore;
   readonly #connections = new Map<WebSocket, ConnectionState>();
   readonly #rooms = new Map<RoomId, RealtimeRoom>();
   readonly #currentSockets = new Map<string, WebSocket>();
@@ -142,6 +179,7 @@ export class RealtimeService {
     this.#roomService = options.roomService ?? new RoomService();
     this.#random = options.random ?? secureRandom;
     this.#clock = options.clock ?? systemClock;
+    this.#history = options.historyStore ?? new SqliteHistoryStore();
     this.webSocketServer = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_MESSAGE_BYTES,
@@ -173,6 +211,7 @@ export class RealtimeService {
     await new Promise<void>((resolve) =>
       this.webSocketServer.close(() => resolve()),
     );
+    this.#history.close?.();
   }
 
   #connect(socket: WebSocket) {
@@ -180,6 +219,7 @@ export class RealtimeService {
       nextSequence: 1,
       bySequence: new Map(),
       sequenceByRequestId: new Map(),
+      chatSentAt: [],
     });
     socket.on('message', (data, isBinary) => {
       if (isBinary) {
@@ -201,15 +241,26 @@ export class RealtimeService {
           room
         ) {
           this.#currentSockets.delete(key);
-          try {
-            room.snapshot = this.#roomService.markDisconnected({
-              ...state.identity,
-              expectedStateVersion: room.snapshot.stateVersion,
-            });
-            room.stateVersion += 1;
-            this.#broadcast(room);
-          } catch {
-            // A concurrent restore or room removal already superseded this close.
+          if (state.identity.kind === 'player') {
+            try {
+              room.snapshot = this.#roomService.markDisconnected({
+                roomId: state.identity.roomId,
+                playerId: state.identity.playerId,
+                reconnectToken: state.identity.reconnectToken,
+                expectedStateVersion: room.snapshot.stateVersion,
+              });
+              room.stateVersion += 1;
+              this.#broadcast(room);
+            } catch {
+              // A concurrent restore or room removal already superseded this close.
+            }
+          } else {
+            const spectator = room.spectators.get(state.identity.spectatorId);
+            if (spectator) {
+              spectator.connection = 'disconnected';
+              this.#syncSpectators(room);
+              this.#broadcast(room);
+            }
           }
         }
       }
@@ -282,6 +333,8 @@ export class RealtimeService {
 
     let response: IndividualServerEvent;
     let credential: PlayerSession | undefined;
+    let visitorId: VisitorId | undefined;
+    let spectatorCredential: SpectatorIdentity | undefined;
     let changedRoom: RealtimeRoom | undefined;
     try {
       const result = this.#execute(socket, connection, event);
@@ -292,6 +345,8 @@ export class RealtimeService {
         stateVersion: result.stateVersion,
       };
       credential = result.credential;
+      visitorId = result.visitorId;
+      spectatorCredential = result.spectatorCredential;
       changedRoom = result.changedRoom;
     } catch (error) {
       if (error instanceof RoomServiceError)
@@ -317,11 +372,34 @@ export class RealtimeService {
         roomId: credential.room.roomId,
         playerId: credential.playerId,
         reconnectToken: credential.reconnectToken,
+        ...(visitorId ? { visitorId } : {}),
       });
-    if (event.type === 'session.resume' && changedRoom && connection.identity)
-      responses.push(
-        this.#playerState(changedRoom, connection.identity.playerId),
-      );
+    if (spectatorCredential)
+      responses.push({
+        type: 'spectator.established',
+        protocolVersion: PROTOCOL_VERSION,
+        roomId: spectatorCredential.roomId,
+        spectatorId: spectatorCredential.spectatorId,
+        reconnectToken: spectatorCredential.reconnectToken,
+        visitorId: spectatorCredential.visitorId,
+      });
+    if (
+      (event.type === 'session.resume' || event.type === 'spectate.resume') &&
+      changedRoom &&
+      connection.identity
+    )
+      responses.push(this.#identityState(changedRoom, connection.identity));
+    if (
+      (event.type === 'session.resume' ||
+        event.type === 'spectate.join' ||
+        event.type === 'spectate.resume') &&
+      changedRoom
+    )
+      responses.push({
+        type: 'chat.history',
+        protocolVersion: PROTOCOL_VERSION,
+        messages: changedRoom.chat,
+      });
     connection.bySequence.set(event.actionSequence, {
       requestId: event.requestId,
       canonical,
@@ -339,7 +417,9 @@ export class RealtimeService {
     if (changedRoom)
       this.#broadcast(
         changedRoom,
-        event.type === 'session.resume' ? socket : undefined,
+        event.type === 'session.resume' || event.type === 'spectate.resume'
+          ? socket
+          : undefined,
       );
   }
 
@@ -358,9 +438,13 @@ export class RealtimeService {
       if (session.stateVersion !== previousRoomVersion)
         runtime.stateVersion += 1;
       const identity = {
+        kind: 'player' as const,
         roomId: session.room.roomId,
         playerId: session.playerId,
         reconnectToken: session.reconnectToken,
+        visitorId:
+          runtime.visitorByPlayer.get(session.playerId) ??
+          (session.playerId as unknown as VisitorId),
       };
       connection.identity = identity;
       runtime.sockets.add(socket);
@@ -375,6 +459,87 @@ export class RealtimeService {
       return {
         stateVersion: runtime.stateVersion,
         credential: session,
+        visitorId: identity.visitorId,
+        changedRoom: runtime,
+      };
+    }
+    if (event.type === 'spectate.join') {
+      if (connection.identity)
+        throw new RoomServiceError('UNAUTHORIZED', '连接已经绑定身份');
+      const runtime = [...this.#rooms.values()].find(
+        (item) => item.snapshot.code === event.roomCode,
+      );
+      if (!runtime) throw new RoomServiceError('ROOM_NOT_FOUND', '房间不存在');
+      if (!runtime.snapshot.config.allowSpectators)
+        throw new RoomServiceError('UNAUTHORIZED', '房间不允许观战');
+      if (runtime.spectators.size >= 20)
+        throw new ProtocolFailure('SPECTATOR_FULL', '观战席已满');
+      const spectatorId = `spectator-${randomUUID()}` as SpectatorId;
+      const reconnectToken = randomBytes(32).toString('base64url');
+      const record: SpectatorRecord = {
+        spectatorId,
+        nickname: event.nickname,
+        tokenDigest: this.#digest(reconnectToken),
+        visitorId: event.visitorId,
+        connection: 'online',
+      };
+      runtime.spectators.set(spectatorId, record);
+      this.#syncSpectators(runtime);
+      const identity: SpectatorIdentity = {
+        kind: 'spectator',
+        roomId: runtime.snapshot.roomId,
+        spectatorId,
+        reconnectToken,
+        visitorId: event.visitorId,
+      };
+      connection.identity = identity;
+      runtime.sockets.add(socket);
+      this.#currentSockets.set(this.#identityKey(identity), socket);
+      return {
+        stateVersion: runtime.stateVersion,
+        spectatorCredential: identity,
+        changedRoom: runtime,
+      };
+    }
+    if (event.type === 'spectate.resume') {
+      if (connection.identity || event.actionSequence !== 1)
+        throw new RoomServiceError(
+          'UNAUTHORIZED',
+          '恢复连接必须是未绑定的新连接',
+        );
+      const runtime = this.#rooms.get(event.roomId);
+      const record = runtime?.spectators.get(event.spectatorId);
+      if (
+        !runtime ||
+        !record ||
+        record.visitorId !== event.visitorId ||
+        record.tokenDigest !== this.#digest(event.reconnectToken)
+      )
+        throw new RoomServiceError('UNAUTHORIZED', '观战凭证无效');
+      const reconnectToken = randomBytes(32).toString('base64url');
+      record.tokenDigest = this.#digest(reconnectToken);
+      record.connection = 'online';
+      this.#syncSpectators(runtime);
+      const identity: SpectatorIdentity = {
+        kind: 'spectator',
+        roomId: event.roomId,
+        spectatorId: event.spectatorId,
+        reconnectToken,
+        visitorId: event.visitorId,
+      };
+      connection.identity = identity;
+      runtime.sockets.add(socket);
+      const key = this.#identityKey(identity);
+      const oldSocket = this.#currentSockets.get(key);
+      this.#currentSockets.set(key, socket);
+      if (oldSocket && oldSocket !== socket) {
+        runtime.sockets.delete(oldSocket);
+        delete this.#connections.get(oldSocket)!.identity;
+        oldSocket.close(4001, 'session replaced');
+      }
+      return {
+        stateVersion: runtime.stateVersion,
+        spectatorCredential: identity,
         changedRoom: runtime,
       };
     }
@@ -391,34 +556,118 @@ export class RealtimeService {
         sockets: new Set<WebSocket>(),
         turnDeadline: null,
         timerGeneration: 0,
+        spectators: new Map(),
+        chat: [],
+        chatVersion: 0,
+        settled: false,
+        visitorByPlayer: new Map(),
       };
       runtime.snapshot = session.room;
       runtime.stateVersion = session.stateVersion;
       runtime.sockets.add(socket);
       this.#rooms.set(session.room.roomId, runtime);
       connection.identity = {
+        kind: 'player',
         roomId: session.room.roomId,
         playerId: session.playerId,
         reconnectToken: session.reconnectToken,
+        visitorId:
+          event.visitorId ?? (session.playerId as unknown as VisitorId),
       };
+      runtime.visitorByPlayer.set(
+        session.playerId,
+        connection.identity.visitorId,
+      );
       this.#currentSockets.set(this.#identityKey(connection.identity), socket);
       return {
         stateVersion: runtime.stateVersion,
         credential: session,
+        visitorId: connection.identity.visitorId,
         changedRoom: runtime,
       };
     }
     if (!connection.identity)
       throw new RoomServiceError('UNAUTHORIZED', '连接尚未绑定玩家身份');
-    if (
-      event.type === 'chat.send' ||
-      event.type === 'spectate.join' ||
-      event.type === 'spectate.leave'
-    )
-      throw new RoomServiceError('INVALID_INPUT', '此功能尚未实现');
     const identity = connection.identity;
     const runtime = this.#rooms.get(identity.roomId);
     if (!runtime) throw new RoomServiceError('ROOM_NOT_FOUND', '房间不存在');
+    if (event.type === 'chat.send') {
+      if (!runtime.snapshot.config.allowChat)
+        throw new RoomServiceError('UNAUTHORIZED', '房间未开启聊天');
+      const message = event.message.trim();
+      const hasForbiddenControl = [...message].some((character) => {
+        const code = character.codePointAt(0) ?? 0;
+        return (
+          (code < 32 && code !== 9 && code !== 10 && code !== 13) ||
+          code === 127
+        );
+      });
+      if (Buffer.byteLength(message, 'utf8') > 1200 || hasForbiddenControl)
+        throw new ProtocolFailure('MALFORMED_MESSAGE', '聊天内容不符合限制');
+      const now = this.#clock.now();
+      connection.chatSentAt = connection.chatSentAt.filter(
+        (time) => now - time < 10_000,
+      );
+      if (connection.chatSentAt.length >= 5)
+        throw new ProtocolFailure('RATE_LIMITED', '发送过于频繁，请稍后再试');
+      connection.chatSentAt.push(now);
+      const sender =
+        identity.kind === 'player'
+          ? runtime.snapshot.players.find(
+              (p) => p.playerId === identity.playerId,
+            )
+          : runtime.spectators.get(identity.spectatorId);
+      if (!sender)
+        throw new RoomServiceError('UNAUTHORIZED', '身份不属于此房间');
+      const chat: ChatMessage = {
+        messageId: randomUUID(),
+        senderNickname: sender.nickname,
+        message,
+        sentAt: new Date(now).toISOString(),
+        chatVersion: ++runtime.chatVersion,
+        ...(identity.kind === 'player'
+          ? { senderPlayerId: identity.playerId }
+          : { senderSpectatorId: identity.spectatorId }),
+      };
+      runtime.chat.push(chat);
+      if (runtime.chat.length > 100) runtime.chat.shift();
+      this.#broadcastEvent(runtime, {
+        type: 'chat.message',
+        protocolVersion: PROTOCOL_VERSION,
+        stateVersion: runtime.stateVersion,
+        ...chat,
+      });
+      return { stateVersion: runtime.stateVersion };
+    }
+    if (event.type === 'history.get') {
+      this.#settleIfFinished(runtime);
+      const history = this.#history.getVisitorHistory(identity.visitorId, 20);
+      this.#send(socket, {
+        type: 'history.result',
+        protocolVersion: PROTOCOL_VERSION,
+        ...history,
+        ...(runtime.authority?.state.phase === 'finished'
+          ? {
+              persistenceStatus: runtime.settled
+                ? ('saved' as const)
+                : ('pending' as const),
+            }
+          : {}),
+      });
+      return { stateVersion: runtime.stateVersion };
+    }
+    if (event.type === 'spectate.leave') {
+      if (identity.kind !== 'spectator')
+        throw new RoomServiceError('UNAUTHORIZED', '只有观战者可离开观战');
+      runtime.spectators.delete(identity.spectatorId);
+      runtime.sockets.delete(socket);
+      this.#currentSockets.delete(this.#identityKey(identity));
+      delete connection.identity;
+      this.#syncSpectators(runtime);
+      return { stateVersion: runtime.stateVersion, changedRoom: runtime };
+    }
+    if (identity.kind !== 'player')
+      throw new RoomServiceError('UNAUTHORIZED', '观战者不能执行玩家操作');
     if (
       'expectedStateVersion' in event &&
       event.expectedStateVersion !== runtime.stateVersion
@@ -490,6 +739,8 @@ export class RealtimeService {
       };
       runtime.stateVersion = started.stateVersion;
       runtime.authority = authority;
+      runtime.startedAt = new Date(this.#clock.now()).toISOString();
+      runtime.settled = false;
       this.#scheduleTurn(runtime);
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
@@ -506,6 +757,7 @@ export class RealtimeService {
       if (consumesTurn) this.#scheduleTurn(runtime);
       else if (runtime.authority.state.phase === 'finished')
         this.#cancelTimer(runtime);
+      this.#settleIfFinished(runtime);
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
     throw new RoomServiceError('INVALID_INPUT', '不支持的操作');
@@ -578,8 +830,48 @@ export class RealtimeService {
       const identity = this.#connections.get(socket)?.identity;
       if (!identity || socket.readyState !== WebSocket.OPEN) continue;
       if (socket !== except)
-        this.#send(socket, this.#playerState(room, identity.playerId));
+        this.#send(socket, this.#identityState(room, identity));
     }
+  }
+
+  #identityState(
+    room: RealtimeRoom,
+    identity: Identity,
+  ): IndividualServerEvent {
+    if (identity.kind === 'player')
+      return this.#playerState(room, identity.playerId);
+    return {
+      type: 'state.spectator',
+      protocolVersion: PROTOCOL_VERSION,
+      stateVersion: room.stateVersion,
+      view: projectSpectatorView(
+        room.snapshot,
+        room.stateVersion,
+        room.authority,
+        room.turnDeadline,
+      ),
+    };
+  }
+
+  #broadcastEvent(room: RealtimeRoom, event: ServerEvent) {
+    for (const socket of room.sockets)
+      if (socket.readyState === WebSocket.OPEN) this.#send(socket, event);
+  }
+
+  #syncSpectators(room: RealtimeRoom) {
+    room.snapshot = {
+      ...room.snapshot,
+      spectators: [...room.spectators.values()].map((item) => ({
+        identity: 'spectator' as const,
+        spectatorId: item.spectatorId,
+        nickname: item.nickname,
+        connection: item.connection,
+      })),
+    };
+  }
+
+  #digest(token: string) {
+    return createHash('sha256').update(token).digest('hex');
   }
 
   #playerState(room: RealtimeRoom, playerId: PlayerId): IndividualServerEvent {
@@ -597,8 +889,61 @@ export class RealtimeService {
     };
   }
 
-  #identityKey(identity: Pick<Identity, 'roomId' | 'playerId'>) {
-    return `${identity.roomId}:${identity.playerId}`;
+  #identityKey(identity: Identity) {
+    return identity.kind === 'player'
+      ? `${identity.roomId}:player:${identity.playerId}`
+      : `${identity.roomId}:spectator:${identity.spectatorId}`;
+  }
+
+  #settleIfFinished(room: RealtimeRoom) {
+    if (
+      room.settled ||
+      !room.authority ||
+      room.authority.state.phase !== 'finished'
+    )
+      return;
+    const game = projectSpectatorView(
+      room.snapshot,
+      room.stateVersion,
+      room.authority,
+      null,
+    ).public.game!;
+    const winners = new Set(game.winnerPlayerIds ?? []);
+    const losers = new Set(game.loserPlayerIds ?? []);
+    const record: GameRecord = {
+      gameId: game.gameId,
+      roomName: room.snapshot.name,
+      playerCount: room.snapshot.config.playerCount,
+      startedAt: room.startedAt ?? new Date(this.#clock.now()).toISOString(),
+      endedAt: new Date(this.#clock.now()).toISOString(),
+      reason: game.resultReason!,
+      participants: room.snapshot.players.map((player) => {
+        const publicGamePlayer = game.players.find(
+          (item) => item.playerId === player.playerId,
+        )!;
+        return {
+          playerId: player.playerId,
+          nickname: player.nickname,
+          seat: player.seat,
+          team: publicGamePlayer.team,
+          outcome: settlementOutcome(
+            room.snapshot.config.playerCount,
+            player.playerId,
+            winners,
+            losers,
+          ),
+        };
+      }),
+    };
+    try {
+      this.#history.saveGame({
+        record,
+        visitorByPlayer: Object.fromEntries(room.visitorByPlayer),
+      });
+      room.settled = true;
+    } catch {
+      // The finished authority remains intact; a later duplicate finish/query may retry persistence.
+    }
   }
 
   #cancelTimer(room: RealtimeRoom) {
@@ -629,6 +974,7 @@ export class RealtimeService {
         );
         room.stateVersion += 1;
         this.#scheduleTurn(room);
+        this.#settleIfFinished(room);
         this.#broadcast(room);
       } catch {
         this.#cancelTimer(room);
@@ -636,8 +982,8 @@ export class RealtimeService {
     });
   }
 
-  #send(socket: WebSocket, event: IndividualServerEvent) {
-    const safe = individualServerEventSchema.parse(event);
+  #send(socket: WebSocket, event: ServerEvent) {
+    const safe = serverEventSchema.parse(event);
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(safe));
   }
 }

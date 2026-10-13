@@ -7,6 +7,8 @@ import {
   type PlayerId,
   type PlayerView,
   type PublicSnapshot,
+  spectatorViewSchema,
+  type SpectatorView,
 } from '@8cards/shared';
 import type {
   FourPlayerState,
@@ -239,3 +241,14 @@ export const projectPlayerView = (
     private: { hand, legalActionTypes: legalActions(authority, playerId) },
   });
 };
+
+export const projectSpectatorView = (
+  room: RoomSnapshot,
+  stateVersion: number,
+  authority?: AuthorityState,
+  turnDeadline: string | null = null,
+): SpectatorView =>
+  spectatorViewSchema.parse({
+    audience: 'spectator',
+    public: projectPublicSnapshot(room, stateVersion, authority, turnDeadline),
+  });

@@ -15,6 +15,7 @@ import {
   validateRoomCode,
   validateRoomName,
   type LobbySettings,
+  getOrCreateVisitorId,
 } from './lobby.js';
 import {
   connectToLobby,
@@ -23,9 +24,13 @@ import {
   resumeLobby,
   type LobbyConnection,
   type LobbyRequest,
+  spectateRoom,
+  resumeSpectator,
+  type SpectatorConnection,
 } from './realtime-client.js';
 import { leaveWaitingRoom } from './waiting-room.js';
 import { GameTable } from './game-table.js';
+import { SpectatorTable } from './spectator-table.js';
 
 type Page = 'home' | 'create' | 'settings' | 'entered';
 type SessionState =
@@ -94,22 +99,44 @@ export default function App() {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const [connection, setConnection] = useState<LobbyConnection>();
+  const [spectatorConnection, setSpectatorConnection] =
+    useState<SpectatorConnection>();
+  const [spectatorView, setSpectatorView] =
+    useState<SpectatorConnection['view']>();
   const [view, setView] = useState<LobbyConnection['view']>();
   const [sessionState, setSessionState] = useState<SessionState>('connecting');
   const [copied, setCopied] = useState(false);
   const activeCancel = useRef<(() => void) | null>(null);
   const activeConnection = useRef<LobbyConnection | null>(null);
+  const activeSpectator = useRef<SpectatorConnection | null>(null);
   const recoveryAttempt = useRef(0);
 
   useEffect(() => {
     const stored = loadCurrentSession(localStorage);
+    const storedSpectator = (() => {
+      try {
+        return JSON.parse(
+          localStorage.getItem('8cards:spectator:current') ?? 'null',
+        ) as {
+          roomId: never;
+          spectatorId: never;
+          reconnectToken: string;
+          visitorId: never;
+        } | null;
+      } catch {
+        return null;
+      }
+    })();
     const restoreTimer = stored
       ? window.setTimeout(() => void recover(stored), 0)
-      : undefined;
+      : storedSpectator
+        ? window.setTimeout(() => void recoverSpectator(storedSpectator), 0)
+        : undefined;
     return () => {
       if (restoreTimer !== undefined) window.clearTimeout(restoreTimer);
       activeCancel.current?.();
       activeConnection.current?.close();
+      activeSpectator.current?.close();
     };
   }, []);
   useEffect(() => {
@@ -180,6 +207,72 @@ export default function App() {
       activeCancel.current = null;
     }
   };
+  const activateSpectator = (result: SpectatorConnection) => {
+    activeSpectator.current?.close();
+    activeSpectator.current = result;
+    setSpectatorConnection(result);
+    setSpectatorView(result.view);
+    setPage('entered');
+    setSessionState('started');
+    result.subscribe((next) => setSpectatorView(next));
+    result.onDisconnect(() => setSessionState('disconnected'));
+    localStorage.setItem(
+      '8cards:spectator:current',
+      JSON.stringify({
+        roomId: result.roomId,
+        spectatorId: result.spectatorId,
+        reconnectToken: result.reconnectToken,
+        visitorId: result.visitorId,
+      }),
+    );
+  };
+  const recoverSpectator = async (stored: {
+    roomId: never;
+    spectatorId: never;
+    reconnectToken: string;
+    visitorId: never;
+  }) => {
+    try {
+      const operation = resumeSpectator(stored, {
+        url: resolveWebSocketUrl(window.location, import.meta.env.VITE_WS_URL),
+      });
+      activateSpectator(await operation.promise);
+    } catch {
+      localStorage.removeItem('8cards:spectator:current');
+      setSessionState('resume-failed');
+    }
+  };
+  const startSpectating = async () => {
+    const name = persistNickname();
+    const code = normalizeRoomCode(roomCode);
+    const problem = validateRoomCode(code);
+    if (!name || problem) {
+      if (problem) setError(problem);
+      return;
+    }
+    setPending(true);
+    setError('');
+    try {
+      const operation = spectateRoom(
+        {
+          nickname: name,
+          roomCode: code,
+          visitorId: getOrCreateVisitorId(localStorage),
+        },
+        {
+          url: resolveWebSocketUrl(
+            window.location,
+            import.meta.env.VITE_WS_URL,
+          ),
+        },
+      );
+      activateSpectator(await operation.promise);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : fallbackError);
+    } finally {
+      setPending(false);
+    }
+  };
   const run = async (request: LobbyRequest) => {
     if (pending) return;
     setPending(true);
@@ -214,7 +307,12 @@ export default function App() {
       return;
     }
     setRoomCode(code);
-    void run({ kind: 'join', nickname: name, roomCode: code });
+    void run({
+      kind: 'join',
+      nickname: name,
+      roomCode: code,
+      visitorId: getOrCreateVisitorId(localStorage),
+    });
   };
   const submitCreate = (event: FormEvent) => {
     event.preventDefault();
@@ -226,7 +324,13 @@ export default function App() {
       return;
     }
     setRoomName(title);
-    void run({ kind: 'create', nickname: name, roomName: title, playerCount });
+    void run({
+      kind: 'create',
+      nickname: name,
+      roomName: title,
+      playerCount,
+      visitorId: getOrCreateVisitorId(localStorage),
+    });
   };
   const updateSettings = (next: LobbySettings) => {
     setSettings(next);
@@ -347,6 +451,14 @@ export default function App() {
                 {pending ? '连接中…' : '加入'}
               </Button>
             </form>
+            <Button
+              variant="ghost"
+              type="button"
+              disabled={pending}
+              onClick={() => void startSpectating()}
+            >
+              以观战者身份加入
+            </Button>
             {initialCode && <p className="notice">已从分享链接填入房间码</p>}
             {error && (
               <p className="error" role="alert">
@@ -464,6 +576,20 @@ export default function App() {
           connection={connection}
           connectionState={sessionState}
           onSafeReturn={returnHomePreservingSession}
+        />
+      )}
+      {page === 'entered' && spectatorView && spectatorConnection && (
+        <SpectatorTable
+          view={spectatorView}
+          connection={spectatorConnection}
+          onReturn={() => {
+            spectatorConnection.close();
+            activeSpectator.current = null;
+            setSpectatorConnection(undefined);
+            setSpectatorView(undefined);
+            localStorage.removeItem('8cards:spectator:current');
+            go('home');
+          }}
         />
       )}
       {page === 'entered' && room && self && !view?.public.game && (
@@ -667,7 +793,7 @@ export default function App() {
           </Panel>
         </section>
       )}
-      {page === 'entered' && (!room || !self) && (
+      {page === 'entered' && !spectatorView && (!room || !self) && (
         <section className="entered-wrap">
           <Panel className="entered">
             <Badge tone={sessionState === 'resuming' ? 'gold' : 'red'} dot>

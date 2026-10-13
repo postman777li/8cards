@@ -91,6 +91,7 @@ describe('client protocol validation', () => {
       ...requestMeta,
       nickname: '观众',
       roomCode: 'ABC123',
+      visitorId: 'visitor-1',
     },
     { type: 'spectate.leave', ...requestMeta, expectedStateVersion: 0 },
     {
@@ -297,6 +298,7 @@ describe('server protocol validation', () => {
       senderNickname: '甲',
       message: '你好',
       sentAt: '2026-10-13T12:00:00+08:00',
+      chatVersion: 1,
     },
   ])('accepts valid individual and public events', (event) => {
     expect(serverEventSchema.safeParse(event).success).toBe(true);
@@ -343,8 +345,10 @@ function clientEventType(event: ClientEvent): string {
     case 'room.start':
     case 'chat.send':
     case 'spectate.join':
+    case 'spectate.resume':
     case 'spectate.leave':
     case 'game.action':
+    case 'history.get':
       return event.type;
     default:
       return event satisfies never;
@@ -356,10 +360,13 @@ function serverEventType(event: ServerEvent): string {
     case 'response.ok':
     case 'response.error':
     case 'session.established':
+    case 'spectator.established':
     case 'state.player':
     case 'state.spectator':
     case 'state.public':
     case 'chat.message':
+    case 'chat.history':
+    case 'history.result':
       return event.type;
     default:
       return event satisfies never;

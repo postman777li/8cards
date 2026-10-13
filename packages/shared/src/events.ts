@@ -9,6 +9,8 @@ import {
   stateVersionSchema,
   timestampSchema,
   roomIdSchema,
+  spectatorIdSchema,
+  visitorIdSchema,
 } from './common.js';
 import {
   playerViewSchema,
@@ -37,12 +39,14 @@ const createRoomEventSchema = z.strictObject({
   nickname: nicknameSchema,
   roomName: roomNameSchema,
   config: roomConfigSchema,
+  visitorId: visitorIdSchema.optional(),
 });
 const joinRoomEventSchema = z.strictObject({
   type: z.literal('room.join'),
   ...requestMeta,
   nickname: nicknameSchema,
   roomCode: roomCodeSchema,
+  visitorId: visitorIdSchema.optional(),
 });
 const resumeSessionEventSchema = z.strictObject({
   type: z.literal('session.resume'),
@@ -74,6 +78,15 @@ const spectateJoinEventSchema = z.strictObject({
   ...requestMeta,
   nickname: nicknameSchema,
   roomCode: roomCodeSchema,
+  visitorId: visitorIdSchema,
+});
+const spectateResumeEventSchema = z.strictObject({
+  type: z.literal('spectate.resume'),
+  ...requestMeta,
+  roomId: roomIdSchema,
+  spectatorId: spectatorIdSchema,
+  reconnectToken: z.string().min(32).max(256),
+  visitorId: visitorIdSchema,
 });
 const spectateLeaveEventSchema = z.strictObject({
   type: z.literal('spectate.leave'),
@@ -95,6 +108,10 @@ const gameActionEventSchema = z.strictObject({
   ...versionedRequestMeta,
   action: gameActionSchema,
 });
+const historyGetEventSchema = z.strictObject({
+  type: z.literal('history.get'),
+  ...requestMeta,
+});
 export const clientEventSchema = z.discriminatedUnion('type', [
   createRoomEventSchema,
   joinRoomEventSchema,
@@ -104,8 +121,10 @@ export const clientEventSchema = z.discriminatedUnion('type', [
   startEventSchema,
   chatEventSchema,
   spectateJoinEventSchema,
+  spectateResumeEventSchema,
   spectateLeaveEventSchema,
   gameActionEventSchema,
+  historyGetEventSchema,
 ]);
 
 const responseOkSchema = z.strictObject({
@@ -126,6 +145,15 @@ export const sessionEstablishedEventSchema = z.strictObject({
   roomId: roomIdSchema,
   playerId: playerIdSchema,
   reconnectToken: z.string().min(32).max(256),
+  visitorId: visitorIdSchema.optional(),
+});
+export const spectatorSessionEstablishedEventSchema = z.strictObject({
+  type: z.literal('spectator.established'),
+  protocolVersion: protocolVersionSchema,
+  roomId: roomIdSchema,
+  spectatorId: spectatorIdSchema,
+  reconnectToken: z.string().min(32).max(256),
+  visitorId: visitorIdSchema,
 });
 const playerSnapshotEventSchema = z.strictObject({
   type: z.literal('state.player'),
@@ -139,12 +167,57 @@ const spectatorSnapshotEventSchema = z.strictObject({
   stateVersion: stateVersionSchema,
   view: spectatorViewSchema,
 });
+export const chatMessageSchema = z.strictObject({
+  messageId: z.string().trim().min(1).max(128),
+  senderPlayerId: playerIdSchema.optional(),
+  senderSpectatorId: spectatorIdSchema.optional(),
+  senderNickname: nicknameSchema,
+  message: z.string().min(1).max(300),
+  sentAt: timestampSchema,
+  chatVersion: z.number().int().positive(),
+});
+const chatHistoryEventSchema = z.strictObject({
+  type: z.literal('chat.history'),
+  protocolVersion: protocolVersionSchema,
+  messages: z.array(chatMessageSchema).max(100),
+});
+const participantResultSchema = z.strictObject({
+  playerId: playerIdSchema,
+  nickname: nicknameSchema,
+  seat: z.number().int().min(0).max(3),
+  team: z.enum(['team-a', 'team-b', 'solo']),
+  outcome: z.enum(['win', 'loss', 'unresolved']),
+});
+export const gameRecordSchema = z.strictObject({
+  gameId: z.string().min(1).max(128),
+  roomName: roomNameSchema,
+  playerCount: z.union([z.literal(2), z.literal(3), z.literal(4)]),
+  startedAt: timestampSchema,
+  endedAt: timestampSchema,
+  reason: z.enum(['emptied-hand', 'stuck-with-jokers']),
+  participants: z.array(participantResultSchema).min(2).max(4),
+});
+const historyResultEventSchema = z.strictObject({
+  type: z.literal('history.result'),
+  protocolVersion: protocolVersionSchema,
+  stats: z.strictObject({
+    games: z.number().int().nonnegative(),
+    wins: z.number().int().nonnegative(),
+    losses: z.number().int().nonnegative(),
+    unresolved: z.number().int().nonnegative(),
+  }),
+  recent: z.array(gameRecordSchema).max(20),
+  persistenceStatus: z.enum(['saved', 'pending']).optional(),
+});
 export const individualServerEventSchema = z.discriminatedUnion('type', [
   responseOkSchema,
   responseErrorSchema,
   sessionEstablishedEventSchema,
+  spectatorSessionEstablishedEventSchema,
   playerSnapshotEventSchema,
   spectatorSnapshotEventSchema,
+  chatHistoryEventSchema,
+  historyResultEventSchema,
 ]);
 const publicStateEventSchema = z.strictObject({
   type: z.literal('state.public'),
@@ -158,9 +231,11 @@ const publicChatEventSchema = z.strictObject({
   stateVersion: stateVersionSchema,
   messageId: z.string().trim().min(1).max(128),
   senderPlayerId: playerIdSchema.optional(),
+  senderSpectatorId: spectatorIdSchema.optional(),
   senderNickname: nicknameSchema,
   message: z.string().min(1).max(300),
   sentAt: timestampSchema,
+  chatVersion: z.number().int().positive(),
 });
 export const publicServerEventSchema = z.discriminatedUnion('type', [
   publicStateEventSchema,
@@ -175,6 +250,8 @@ export type ClientEvent = z.infer<typeof clientEventSchema>;
 export type IndividualServerEvent = z.infer<typeof individualServerEventSchema>;
 export type PublicServerEvent = z.infer<typeof publicServerEventSchema>;
 export type ServerEvent = z.infer<typeof serverEventSchema>;
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type GameRecord = z.infer<typeof gameRecordSchema>;
 export const parseClientEvent = (input: unknown): ClientEvent =>
   clientEventSchema.parse(input);
 export const parseServerEvent = (input: unknown): ServerEvent =>
