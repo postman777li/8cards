@@ -377,6 +377,14 @@ export function applyTwoPlayerAction<PlayerId extends string>(
   if (action.type === 'exchange-trump-two')
     return exchangeTrumpTwo(activeState, action.playerId);
 
+  if (action.type === 'take') {
+    if (action.playerId !== activeState.defender)
+      fail('WRONG_ACTOR', 'Only the defender can take the table');
+    if (activeState.table.length === 0)
+      fail('WRONG_PHASE', 'The table is empty');
+    return settle(activeState, 'taken');
+  }
+
   requireActor(activeState, action.playerId);
   if (action.type === 'attack') {
     if (activeState.phase !== 'awaiting-attack')
@@ -411,11 +419,6 @@ export function applyTwoPlayerAction<PlayerId extends string>(
     if (activeState.phase !== 'awaiting-attack')
       fail('WRONG_PHASE', 'Passing is not expected');
     return settle(activeState, 'defended');
-  }
-  if (action.type === 'take') {
-    if (activeState.phase !== 'awaiting-defense')
-      fail('WRONG_PHASE', 'Taking is not expected');
-    return settle(activeState, 'taken');
   }
   if (activeState.phase !== 'awaiting-defense')
     fail('WRONG_PHASE', 'A defense is not expected');

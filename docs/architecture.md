@@ -78,7 +78,7 @@ tests/          跨模块和联机测试
 
 - `packages/game-engine/src/two-player.ts` 从任务 06 的 `InitialDeal` 创建服务端权威二人状态，并由包根入口公开 `createTwoPlayerState`、`applyTwoPlayerAction`、状态/动作类型、稳定错误类型及不变量断言。
 - 状态使用 `awaiting-attack`、`awaiting-defense`、`finished` 可判别联合；共同数据包含两名玩家座次、完整手牌、牌墩、弃牌区、固定主花色、当前底牌、攻守身份、桌面攻防牌对、可引点数、累计进攻数、换牌标记和状态版本。
-- 普通动作是 `attack`、`defend`、`pass`、`take`；每个动作显式携带玩家身份。`exchange-trump-two` 是不消耗行动权的独立动作，当前行动者与非当前行动者均可执行一次。
+- 普通动作是 `attack`、`defend`、`pass`、`take`；每个动作显式携带玩家身份。`take` 由当前防守方在桌面非空时发起，既可发生在尚未压牌的 `awaiting-defense`，也可发生在已压住一张或多张后的 `awaiting-attack`，因此不受普通行动者游标限制。`exchange-trump-two` 是不消耗行动权的独立动作，当前行动者与非当前行动者均可执行一次。
 - 转换函数不修改输入。成功动作返回新状态并将版本递增一次；失败动作抛出带稳定错误码的 `TwoPlayerEngineError`，不会产生部分状态。
 - 进攻与防守逐张交替，桌面普通攻牌和防守牌共同贡献可引点数；实时数量限制在每次进攻前根据防守方当前手牌重新判断。
 - `pass` 原子完成防守成功结算、弃牌、进攻方优先补牌及攻守交换；`take` 原子完成桌面收牌、同样的补牌顺序，并保持原进攻方继续进攻。

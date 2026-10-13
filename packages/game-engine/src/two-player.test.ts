@@ -305,6 +305,98 @@ describe('round settlement and limits', () => {
     expect(state.discard).toHaveLength(0);
   });
 
+  it('allows the defender to take after beating a single attack', () => {
+    const defended = defend(attack(initial(), 'clubs-3'), 'clubs-4');
+    const snapshot = structuredClone(defended);
+    const stockTop = defended.stock[0]!.id;
+    const state = applyTwoPlayerAction(defended, {
+      type: 'take',
+      playerId: 'bob',
+    });
+
+    expect(state).toMatchObject({
+      phase: 'awaiting-attack',
+      attacker: 'alice',
+      defender: 'bob',
+      actor: 'alice',
+    });
+    expect(
+      state.hands.get('alice')!.some((value) => value.id === stockTop),
+    ).toBe(true);
+    expect(state.hands.get('bob')).toHaveLength(9);
+    expect(state.table).toHaveLength(0);
+    expect(state.discard).toHaveLength(0);
+    expect(defended).toEqual(snapshot);
+    assertTwoPlayerInvariant(state);
+  });
+
+  it('allows taking after multiple attacks have all been beaten', () => {
+    const source = deal(
+      [
+        'clubs-3',
+        'spades-4',
+        'hearts-7',
+        'spades-9',
+        'diamonds-J',
+        'clubs-K',
+        'hearts-A',
+        'spades-2',
+      ],
+      [
+        'clubs-4',
+        'diamonds-5',
+        'hearts-8',
+        'spades-10',
+        'diamonds-Q',
+        'clubs-A',
+        'hearts-2',
+        'small-joker',
+      ],
+    );
+    let state = defend(attack(initial(source), 'clubs-3'), 'clubs-4');
+    state = defend(attack(state, 'spades-4'), 'diamonds-5');
+    const beforeTake = state;
+    const snapshot = structuredClone(beforeTake);
+    state = applyTwoPlayerAction(beforeTake, {
+      type: 'take',
+      playerId: 'bob',
+    });
+
+    expect(state).toMatchObject({
+      attacker: 'alice',
+      defender: 'bob',
+      actor: 'alice',
+      attackCount: 0,
+    });
+    expect(state.hands.get('alice')).toHaveLength(8);
+    expect(state.hands.get('bob')).toHaveLength(10);
+    expect(state.table).toHaveLength(0);
+    expect(beforeTake).toEqual(snapshot);
+    assertTwoPlayerInvariant(state);
+  });
+
+  it('rejects taking by the attacker without changing the state', () => {
+    const state = defend(attack(initial(), 'clubs-3'), 'clubs-4');
+    const snapshot = structuredClone(state);
+    expectCode(
+      () => applyTwoPlayerAction(state, { type: 'take', playerId: 'alice' }),
+      'WRONG_ACTOR',
+    );
+    expect(state).toEqual(snapshot);
+    assertTwoPlayerInvariant(state);
+  });
+
+  it('rejects taking an empty table without changing the state', () => {
+    const state = initial();
+    const snapshot = structuredClone(state);
+    expectCode(
+      () => applyTwoPlayerAction(state, { type: 'take', playerId: 'bob' }),
+      'WRONG_PHASE',
+    );
+    expect(state).toEqual(snapshot);
+    assertTwoPlayerInvariant(state);
+  });
+
   it('enforces the live 8-card limit at four successful defenses', () => {
     const source = deal(
       [
