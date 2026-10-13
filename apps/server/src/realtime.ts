@@ -615,16 +615,10 @@ export class RealtimeService {
     }
     if (room.timerHandle !== undefined) this.#clock.cancel(room.timerHandle);
     const generation = ++room.timerGeneration;
-    const expectedVersion = room.stateVersion;
     const delay = room.snapshot.config.turnTimeoutSeconds * 1000;
     room.turnDeadline = new Date(this.#clock.now() + delay).toISOString();
     room.timerHandle = this.#clock.schedule(delay, () => {
-      if (
-        room.timerGeneration !== generation ||
-        room.stateVersion !== expectedVersion ||
-        !room.authority
-      )
-        return;
+      if (room.timerGeneration !== generation || !room.authority) return;
       const state = room.authority.state;
       if (state.phase === 'finished') return this.#cancelTimer(room);
       try {

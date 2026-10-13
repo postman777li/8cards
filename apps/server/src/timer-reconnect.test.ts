@@ -102,6 +102,9 @@ const publicOf = (event: Event) =>
           currentActorId: string;
           turnDeadline: string;
           table: unknown[];
+          trumpSuit: string;
+          attackerId: string;
+          defenderId: string;
         } | null;
       };
     }
@@ -231,6 +234,143 @@ describe('authoritative turn timers', () => {
     expect(publicOf(collected).game!.table).toEqual([]);
     expect(publicOf(collected).game!.turnDeadline).not.toBe(oldDeadline);
   });
+
+  it('keeps the original deadline across a disconnect and fires after the remaining ten seconds', async () => {
+    const game = await setup(2);
+    const initial = await state(game.players[0]!, game.version);
+    const deadline = publicOf(initial).game!.turnDeadline;
+    const actorId = publicOf(initial).game!.currentActorId;
+    const actorIndex = game.credentials.findIndex(
+      (credential) => credential.playerId === actorId,
+    );
+    game.clock.advance(10_000);
+    await game.players[actorIndex]!.close();
+    clients.delete(game.players[actorIndex]!);
+    const observer = game.players[actorIndex === 0 ? 1 : 0]!;
+    const disconnected = await state(observer, game.version + 1);
+    expect(publicOf(disconnected).game!.turnDeadline).toBe(deadline);
+    expect(publicOf(disconnected).game!.currentActorId).toBe(actorId);
+    game.clock.advance(9_999);
+    expect(
+      observer.events.some((event) => event.stateVersion === game.version + 2),
+    ).toBe(false);
+    game.clock.advance(1);
+    const timedOut = await state(observer, game.version + 2);
+    expect(publicOf(timedOut).game!.currentActorId).not.toBe(actorId);
+    expect(publicOf(timedOut).game!.turnDeadline).toBe(
+      '2026-10-13T04:00:40.000Z',
+    );
+  });
+
+  it('keeps the original deadline when a disconnected player resumes before expiry', async () => {
+    const game = await setup(2);
+    const initial = await state(game.players[0]!, game.version);
+    const deadline = publicOf(initial).game!.turnDeadline;
+    const target = game.players[1]!;
+    const credential = game.credentials[1]!;
+    game.clock.advance(5_000);
+    await target.close();
+    clients.delete(target);
+    await state(game.players[0]!, game.version + 1);
+    game.clock.advance(5_000);
+    const resumed = await Client.connect(game.url);
+    clients.add(resumed);
+    await send(resumed, {
+      type: 'session.resume',
+      ...meta('resume-before-deadline', 1),
+      roomId: credential.roomId,
+      playerId: credential.playerId,
+      reconnectToken: credential.reconnectToken,
+    });
+    const online = await state(resumed, game.version + 2);
+    expect(publicOf(online).game!.turnDeadline).toBe(deadline);
+    game.clock.advance(10_000);
+    const timedOut = await state(resumed, game.version + 3);
+    expect(publicOf(timedOut).game!.turnDeadline).toBe(
+      '2026-10-13T04:00:40.000Z',
+    );
+  });
+
+  it('auto-collects when the current defender is disconnected', async () => {
+    const game = await setup(2);
+    const views = await Promise.all(
+      game.players.map((client) => state(client, game.version)),
+    );
+    const actorId = publicOf(views[0]!).game!.currentActorId;
+    const actorIndex = game.credentials.findIndex(
+      (credential) => credential.playerId === actorId,
+    );
+    const defenderIndex = actorIndex === 0 ? 1 : 0;
+    const card = (
+      views[actorIndex]!.view as {
+        private: { hand: Array<{ id: string; kind: string }> };
+      }
+    ).private.hand.find((item) => item.kind === 'standard')!;
+    await send(game.players[actorIndex]!, {
+      type: 'game.action',
+      ...meta('attack-before-defender-drop', 3),
+      expectedStateVersion: game.version,
+      action: { kind: 'play-card', cardId: card.id },
+    });
+    const defending = await state(game.players[actorIndex]!, game.version + 1);
+    const deadline = publicOf(defending).game!.turnDeadline;
+    await game.players[defenderIndex]!.close();
+    clients.delete(game.players[defenderIndex]!);
+    const disconnected = await state(
+      game.players[actorIndex]!,
+      game.version + 2,
+    );
+    expect(publicOf(disconnected).game!.turnDeadline).toBe(deadline);
+    expect(publicOf(disconnected).game!.currentActorId).toBe(
+      game.credentials[defenderIndex]!.playerId,
+    );
+    game.clock.advance(20_000);
+    const collected = await state(game.players[actorIndex]!, game.version + 3);
+    expect(publicOf(collected).game!.table).toEqual([]);
+    expect(publicOf(collected).game!.currentActorId).toBe(actorId);
+  });
+
+  it('does not reset or invalidate the deadline when the trump two is exchanged', async () => {
+    const game = await setup(4);
+    const views = await Promise.all(
+      game.players.map((client) => state(client, game.version)),
+    );
+    const deadline = publicOf(views[0]!).game!.turnDeadline;
+    const trumpSuit = publicOf(views[0]!).game!.trumpSuit;
+    const ownerIndex = views.findIndex((view) =>
+      (
+        view.view as {
+          private: {
+            hand: Array<{ kind: string; suit?: string; rank?: string }>;
+          };
+        }
+      ).private.hand.some(
+        (card) =>
+          card.kind === 'standard' &&
+          card.suit === trumpSuit &&
+          card.rank === '2',
+      ),
+    );
+    expect(ownerIndex).toBeGreaterThanOrEqual(0);
+    game.clock.advance(10_000);
+    const exchanged = await send(game.players[ownerIndex]!, {
+      type: 'game.action',
+      ...meta('exchange-before-timeout', 3),
+      expectedStateVersion: game.version,
+      action: { kind: 'exchange-trump-two' },
+    });
+    expect(exchanged.stateVersion).toBe(game.version + 1);
+    const afterExchange = await state(
+      game.players[ownerIndex]!,
+      game.version + 1,
+    );
+    expect(publicOf(afterExchange).game!.turnDeadline).toBe(deadline);
+    game.clock.advance(10_000);
+    const timedOut = await state(game.players[ownerIndex]!, game.version + 2);
+    expect(publicOf(timedOut).game!.turnDeadline).toBe(
+      '2026-10-13T04:00:40.000Z',
+    );
+  });
 });
 
 describe('disconnect and session restoration', () => {
@@ -279,7 +419,15 @@ describe('disconnect and session restoration', () => {
         member.players.find((item) => item.playerId === credential.playerId)
           ?.connection,
       ).toBe('disconnected');
+      const beforeTimeoutGame = publicOf(disconnected).game!;
       game.clock.advance(20_000);
+      const timedOut = await state(game.players[0]!, game.version + 2);
+      const afterTimeoutGame = publicOf(timedOut).game!;
+      expect(afterTimeoutGame.turnDeadline).toBe('2026-10-13T04:00:40.000Z');
+      expect(afterTimeoutGame.currentActorId).not.toBe(
+        beforeTimeoutGame.currentActorId,
+      );
+      expect(afterTimeoutGame.table).toEqual([]);
       const resumed = await Client.connect(game.url);
       clients.add(resumed);
       const response = await send(resumed, {
@@ -291,13 +439,13 @@ describe('disconnect and session restoration', () => {
       });
       expect(response).toMatchObject({
         type: 'response.ok',
-        stateVersion: game.version + 2,
+        stateVersion: game.version + 3,
       });
       const newCredential = await resumed.find(
         (event) => event.type === 'session.established',
       );
       expect(newCredential.reconnectToken).not.toBe(credential.reconnectToken);
-      const restored = await state(resumed, game.version + 2);
+      const restored = await state(resumed, game.version + 3);
       expect(
         (restored.view as { private: { hand: unknown[] } }).private.hand,
       ).toEqual(oldHand);
