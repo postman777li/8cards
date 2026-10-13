@@ -3,6 +3,7 @@ import {
   parseClientEvent,
   safeParseServerEvent,
   type ClientEvent,
+  type GameAction,
   type PlayerId,
   type PlayerView,
   type ProtocolError,
@@ -33,6 +34,7 @@ export interface LobbyConnection {
   ready(value: boolean): Promise<void>;
   start(): Promise<void>;
   leave(): Promise<void>;
+  action(value: GameAction): Promise<void>;
   subscribe(listener: (view: PlayerView) => void): () => void;
   onDisconnect(listener: () => void): () => void;
   close(): void;
@@ -93,6 +95,9 @@ class LiveConnection implements LobbyConnection {
   leave() {
     return this.#send('room.leave', {});
   }
+  action(value: GameAction) {
+    return this.#send('game.action', { action: value });
+  }
   subscribe(listener: (view: PlayerView) => void) {
     this.#views.add(listener);
     return () => this.#views.delete(listener);
@@ -109,8 +114,8 @@ class LiveConnection implements LobbyConnection {
     if (this.socket.readyState < 2) this.socket.close();
   }
   #send(
-    type: 'room.ready' | 'room.start' | 'room.leave',
-    body: { ready?: boolean },
+    type: 'room.ready' | 'room.start' | 'room.leave' | 'game.action',
+    body: { ready?: boolean; action?: GameAction },
   ) {
     if (this.#closed || this.#pending.size)
       return Promise.reject(new LobbyConnectionError('操作正在处理中'));

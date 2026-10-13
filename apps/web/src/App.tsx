@@ -25,6 +25,7 @@ import {
   type LobbyRequest,
 } from './realtime-client.js';
 import { leaveWaitingRoom } from './waiting-room.js';
+import { GameTable } from './game-table.js';
 
 type Page = 'home' | 'create' | 'settings' | 'entered';
 type SessionState =
@@ -457,7 +458,15 @@ export default function App() {
           </Panel>
         </section>
       )}
-      {page === 'entered' && room && self && (
+      {page === 'entered' && room && self && view?.public.game && (
+        <GameTable
+          view={view}
+          connection={connection}
+          connectionState={sessionState}
+          onSafeReturn={returnHomePreservingSession}
+        />
+      )}
+      {page === 'entered' && room && self && !view?.public.game && (
         <section className="waiting-layout">
           <Panel className="table-preview" tone="felt">
             <header className="room-title">

@@ -58,6 +58,15 @@ const winnerIds = (authority: AuthorityState): PlayerId[] | undefined => {
   ];
 };
 
+const resultReason = (
+  authority: AuthorityState,
+): 'emptied-hand' | 'stuck-with-jokers' | undefined => {
+  if (authority.state.phase !== 'finished') return undefined;
+  return authority.state.result.reason === 'emptied-hand'
+    ? 'emptied-hand'
+    : 'stuck-with-jokers';
+};
+
 const roles = (authority: AuthorityState, playerId: PlayerId) => {
   const { state } = authority;
   if (authority.mode === 2)
@@ -97,6 +106,7 @@ const projectGame = (
 ): GamePublicState => {
   const { state } = authority;
   const winners = winnerIds(authority);
+  const reason = resultReason(authority);
   const attackPlayerId =
     authority.mode === 2
       ? authority.state.attacker
@@ -137,6 +147,7 @@ const projectGame = (
     defenderId: state.defender,
     turnDeadline,
     ...(winners ? { winnerPlayerIds: winners } : {}),
+    ...(reason ? { resultReason: reason } : {}),
   };
 };
 

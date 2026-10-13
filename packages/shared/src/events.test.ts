@@ -7,6 +7,7 @@ import {
   serverEventSchema,
 } from './events.js';
 import {
+  gamePublicStateSchema,
   opponentViewSchema,
   playerViewSchema,
   spectatorViewSchema,
@@ -209,6 +210,34 @@ describe('visibility boundaries', () => {
 });
 
 describe('server protocol validation', () => {
+  it('exposes only the normalized public finish reason', () => {
+    const game = {
+      gameId: 'game-1',
+      phase: 'finished',
+      trumpSuit: 'hearts',
+      exposedCard: null,
+      stockCount: 0,
+      table: [],
+      players: [
+        { playerId: 'p1', handCount: 0, role: 'attacker', team: 'solo' },
+        { playerId: 'p2', handCount: 2, role: 'defender', team: 'solo' },
+      ],
+      currentActorId: null,
+      attackerId: 'p1',
+      defenderId: 'p2',
+      turnDeadline: null,
+      winnerPlayerIds: ['p1'],
+      resultReason: 'stuck-with-jokers',
+    };
+    expect(gamePublicStateSchema.parse(game).resultReason).toBe(
+      'stuck-with-jokers',
+    );
+    expect(
+      gamePublicStateSchema.safeParse({ ...game, resultReason: 'secret-state' })
+        .success,
+    ).toBe(false);
+  });
+
   it.each([
     {
       type: 'response.ok',

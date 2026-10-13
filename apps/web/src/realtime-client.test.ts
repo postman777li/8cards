@@ -330,4 +330,62 @@ describe('websocket lobby client', () => {
     });
     await expect(leaving).resolves.toBeUndefined();
   });
+
+  it('submits game actions with the latest version and permits only one in flight', async () => {
+    const socket = new FakeSocket();
+    const operation = connectToLobby(
+      { kind: 'create', nickname: '甲', roomName: '好友桌', playerCount: 2 },
+      { url: 'ws://test/ws', createSocket: () => socket as never },
+    );
+    socket.open();
+    const create = JSON.parse(socket.sent[0]!);
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: create.requestId,
+      stateVersion: 1,
+    });
+    socket.message({
+      type: 'session.established',
+      ...meta,
+      roomId: 'room-1',
+      playerId: 'p1',
+      reconnectToken: 'a'.repeat(32),
+    });
+    socket.message({
+      type: 'state.player',
+      ...meta,
+      stateVersion: 1,
+      view: snapshot,
+    });
+    const connection = await operation.promise;
+
+    const action = connection.action({
+      kind: 'play-card',
+      cardId: 'hearts-A' as never,
+    });
+    const request = JSON.parse(socket.sent[1]!);
+    expect(request).toMatchObject({
+      type: 'game.action',
+      actionSequence: 2,
+      expectedStateVersion: 1,
+      action: { kind: 'play-card', cardId: 'hearts-A' },
+    });
+    await expect(connection.action({ kind: 'pass' })).rejects.toMatchObject({
+      message: '操作正在处理中',
+    });
+    expect(socket.sent).toHaveLength(2);
+    socket.message({
+      type: 'response.error',
+      ...meta,
+      requestId: request.requestId,
+      error: {
+        code: 'ILLEGAL_ACTION',
+        message: '此牌不能出',
+        retryable: false,
+      },
+    });
+    await expect(action).rejects.toMatchObject({ message: '此牌不能出' });
+    expect(connection.view.public.stateVersion).toBe(1);
+  });
 });
