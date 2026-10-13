@@ -22,17 +22,27 @@ export const cardIdSchema = z
   .regex(
     /^(clubs|diamonds|hearts|spades)-(2|3|4|5|6|7|8|9|10|J|Q|K|A)$|^(small|big)-joker$/,
   );
-export const standardCardSchema = z.strictObject({
-  id: cardIdSchema,
-  kind: z.literal('standard'),
-  suit: suitSchema,
-  rank: standardRankSchema,
-});
-export const jokerCardSchema = z.strictObject({
-  id: cardIdSchema,
-  kind: z.literal('joker'),
-  rank: jokerRankSchema,
-});
+export const standardCardSchema = z
+  .strictObject({
+    id: cardIdSchema,
+    kind: z.literal('standard'),
+    suit: suitSchema,
+    rank: standardRankSchema,
+  })
+  .refine((card) => card.id === `${card.suit}-${card.rank}`, {
+    message: 'Card ID must match its suit and rank',
+    path: ['id'],
+  });
+export const jokerCardSchema = z
+  .strictObject({
+    id: cardIdSchema,
+    kind: z.literal('joker'),
+    rank: jokerRankSchema,
+  })
+  .refine((card) => card.id === card.rank, {
+    message: 'Joker ID must match its rank',
+    path: ['id'],
+  });
 export const cardSchema = z.discriminatedUnion('kind', [
   standardCardSchema,
   jokerCardSchema,
