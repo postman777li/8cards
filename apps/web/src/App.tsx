@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Badge, Button, Panel } from '@8cards/ui';
+import { Badge, Button, Panel, PlayerSeat } from '@8cards/ui';
 import {
   NICKNAME_STORAGE_KEY,
   buildShareUrl,
+  clearCurrentSession,
+  loadCurrentSession,
   loadSettings,
   normalizeNickname,
   normalizeRoomCode,
@@ -19,11 +21,19 @@ import {
   connectToLobby,
   LobbyConnectionError,
   resolveWebSocketUrl,
+  resumeLobby,
   type LobbyConnection,
   type LobbyRequest,
 } from './realtime-client.js';
 
 type Page = 'home' | 'create' | 'settings' | 'entered';
+type SessionState =
+  | 'connecting'
+  | 'waiting-room'
+  | 'disconnected'
+  | 'resuming'
+  | 'resume-failed'
+  | 'started';
 const fallbackError = '暂时无法进入房间，请稍后重试';
 
 function Brand() {
@@ -83,19 +93,24 @@ export default function App() {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const [connection, setConnection] = useState<LobbyConnection>();
-  const [networkState, setNetworkState] = useState<'online' | 'disconnected'>(
-    'online',
-  );
+  const [view, setView] = useState<LobbyConnection['view']>();
+  const [sessionState, setSessionState] = useState<SessionState>('connecting');
   const [copied, setCopied] = useState(false);
   const activeCancel = useRef<(() => void) | null>(null);
+  const activeConnection = useRef<LobbyConnection | null>(null);
+  const recoveryAttempt = useRef(0);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const stored = loadCurrentSession(localStorage);
+    const restoreTimer = stored
+      ? window.setTimeout(() => void recover(stored), 0)
+      : undefined;
+    return () => {
+      if (restoreTimer !== undefined) window.clearTimeout(restoreTimer);
       activeCancel.current?.();
-      connection?.socket.close();
-    },
-    [connection],
-  );
+      activeConnection.current?.close();
+    };
+  }, []);
   useEffect(() => {
     document.documentElement.dataset.reduceMotion = settings.reducedMotion
       ? 'true'
@@ -113,11 +128,62 @@ export default function App() {
     localStorage.setItem(NICKNAME_STORAGE_KEY, value);
     return value;
   };
+  const activate = (result: LobbyConnection) => {
+    activeConnection.current?.close();
+    activeConnection.current = result;
+    setConnection(result);
+    setView(result.view);
+    setSessionState(result.view.public.game ? 'started' : 'waiting-room');
+    result.subscribe((next) => {
+      if (activeConnection.current !== result) return;
+      setView(next);
+      setSessionState(next.public.game ? 'started' : 'waiting-room');
+    });
+    result.onDisconnect(() => {
+      if (activeConnection.current !== result) return;
+      setSessionState('disconnected');
+      const credential = {
+        roomId: result.roomId,
+        playerId: result.playerId,
+        reconnectToken: result.reconnectToken,
+      };
+      window.setTimeout(() => {
+        if (activeConnection.current === result) void recover(credential);
+      }, 500);
+    });
+  };
+  const recover = async (stored = loadCurrentSession(localStorage)) => {
+    if (!stored || recoveryAttempt.current >= 2) {
+      setSessionState('resume-failed');
+      setPage('entered');
+      return;
+    }
+    recoveryAttempt.current += 1;
+    setSessionState('resuming');
+    setPage('entered');
+    try {
+      const operation = resumeLobby(stored, {
+        url: resolveWebSocketUrl(window.location, import.meta.env.VITE_WS_URL),
+      });
+      activeCancel.current = operation.cancel;
+      const result = await operation.promise;
+      recoveryAttempt.current = 0;
+      saveSession(localStorage, result);
+      activate(result);
+    } catch (caught) {
+      setError(
+        caught instanceof LobbyConnectionError ? caught.message : fallbackError,
+      );
+      setSessionState('resume-failed');
+    } finally {
+      activeCancel.current = null;
+    }
+  };
   const run = async (request: LobbyRequest) => {
     if (pending) return;
     setPending(true);
     setError('');
-    setNetworkState('online');
+    setSessionState('connecting');
     try {
       const operation = connectToLobby(request, {
         url: resolveWebSocketUrl(window.location, import.meta.env.VITE_WS_URL),
@@ -125,12 +191,8 @@ export default function App() {
       activeCancel.current = operation.cancel;
       const result = await operation.promise;
       saveSession(localStorage, result);
-      result.socket.addEventListener(
-        'close',
-        () => setNetworkState('disconnected'),
-        { once: true },
-      );
-      setConnection(result);
+      recoveryAttempt.current = 0;
+      activate(result);
       setPage('entered');
     } catch (caught) {
       setError(
@@ -174,7 +236,15 @@ export default function App() {
     setCopied(false);
     setPage(next);
   };
-  const room = connection?.view.public.room;
+  const leaveForHome = () => {
+    activeConnection.current?.close();
+    activeConnection.current = null;
+    clearCurrentSession(localStorage);
+    setConnection(undefined);
+    setView(undefined);
+    go('home');
+  };
+  const room = view?.public.room;
   const self = room?.players.find(
     (player) => player.playerId === connection?.playerId,
   );
@@ -366,32 +436,80 @@ export default function App() {
         </section>
       )}
       {page === 'entered' && room && self && (
-        <section className="entered-wrap">
-          <Panel className="entered">
-            <Badge tone={networkState === 'online' ? 'green' : 'red'} dot>
-              {networkState === 'online' ? '已连接' : '连接已断开'}
-            </Badge>
-            <i>入</i>
-            <h1>已进入房间</h1>
-            <p>本人重连凭证已安全保存在当前浏览器。</p>
-            <dl>
+        <section className="waiting-layout">
+          <Panel className="table-preview" tone="felt">
+            <header className="room-title">
               <div>
-                <dt>房间</dt>
-                <dd>{room.name}</dd>
+                <p className="eyebrow">好友等待房</p>
+                <h1>{room.name}</h1>
               </div>
-              <div>
-                <dt>房间码</dt>
-                <dd>{room.code}</dd>
+              <Badge
+                tone={
+                  sessionState === 'waiting-room' || sessionState === 'started'
+                    ? 'green'
+                    : 'red'
+                }
+                dot
+              >
+                {sessionState === 'waiting-room'
+                  ? '实时连接'
+                  : sessionState === 'started'
+                    ? '对局已开始'
+                    : sessionState === 'resuming'
+                      ? '正在恢复'
+                      : '连接中断'}
+              </Badge>
+            </header>
+            <div
+              className={`seat-grid seats-${room.config.playerCount}`}
+              aria-label="玩家座位"
+            >
+              {Array.from({ length: room.config.playerCount }, (_, seat) => {
+                const player = room.players.find((item) => item.seat === seat);
+                return player ? (
+                  <PlayerSeat
+                    key={seat}
+                    name={player.nickname}
+                    avatar={player.nickname.slice(0, 1)}
+                    active={player.playerId === self.playerId}
+                    online={player.connection === 'online'}
+                    role={[
+                      player.isHost ? '房主' : '',
+                      player.playerId === self.playerId ? '本人' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                    status={`${player.connection === 'online' ? '在线' : '已掉线'} · ${player.isHost ? '房主无需准备' : player.readiness === 'ready' ? '已准备' : '未准备'}`}
+                  />
+                ) : (
+                  <PlayerSeat
+                    key={seat}
+                    name={`空座 ${seat + 1}`}
+                    avatar="座"
+                    online={false}
+                    status="等待玩家入座"
+                  />
+                );
+              })}
+              <div className="table-mark">
+                <b>八</b>
+                <span>逆时针座次</span>
               </div>
-              <div>
-                <dt>昵称</dt>
-                <dd>{self.nickname}</dd>
-              </div>
-              <div>
-                <dt>模式</dt>
-                <dd>{room.config.playerCount} 人局</dd>
-              </div>
-            </dl>
+            </div>
+          </Panel>
+          <Panel className="room-sidebar">
+            <div className="room-code">
+              <span>六位房间码</span>
+              <strong>{room.code}</strong>
+            </div>
+            <div className="room-facts">
+              <span>{room.config.playerCount} 人局</span>
+              <span>{room.config.turnTimeoutSeconds} 秒操作</span>
+              <span>{room.config.allowChat ? '允许聊天' : '关闭聊天'}</span>
+              <span>
+                {room.config.allowSpectators ? '允许观战' : '禁止观战'}
+              </span>
+            </div>
             <div className="share">
               <span>{shareUrl}</span>
               <Button
@@ -406,15 +524,127 @@ export default function App() {
                 {copied ? '已复制 ✓' : '复制邀请'}
               </Button>
             </div>
-            {networkState === 'disconnected' && (
-              <p className="error">
-                连接已中断。自动恢复将在任务 15 接入，凭证已保留。
+            {sessionState === 'started' ? (
+              <div className="started-placeholder">
+                <b>对局已开始</b>
+                <p>连接与本人安全视图已保留。牌桌操作将在任务 16 实现。</p>
+              </div>
+            ) : self.isHost ? (
+              (() => {
+                const missing = room.config.playerCount - room.players.length;
+                const unready = room.players.filter(
+                  (player) => !player.isHost && player.readiness !== 'ready',
+                ).length;
+                const reason =
+                  missing > 0
+                    ? `还需 ${missing} 位玩家入座`
+                    : unready > 0
+                      ? `还有 ${unready} 位玩家未准备`
+                      : '全员就绪，可以开始';
+                return (
+                  <div className="primary-action">
+                    <p>{reason}</p>
+                    <Button
+                      size="large"
+                      disabled={
+                        pending ||
+                        missing > 0 ||
+                        unready > 0 ||
+                        sessionState !== 'waiting-room'
+                      }
+                      onClick={() => {
+                        if (!connection || pending) return;
+                        setPending(true);
+                        setError('');
+                        void connection
+                          .start()
+                          .catch((caught) =>
+                            setError(
+                              caught instanceof Error
+                                ? caught.message
+                                : fallbackError,
+                            ),
+                          )
+                          .finally(() => setPending(false));
+                      }}
+                    >
+                      {pending ? '提交中…' : '开始游戏'}
+                    </Button>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="primary-action">
+                <p>
+                  {self.readiness === 'ready'
+                    ? '已准备，等待房主开始'
+                    : '准备好后告诉房主'}
+                </p>
+                <Button
+                  size="large"
+                  variant={self.readiness === 'ready' ? 'secondary' : 'primary'}
+                  disabled={pending || sessionState !== 'waiting-room'}
+                  onClick={() => {
+                    if (!connection || pending) return;
+                    setPending(true);
+                    setError('');
+                    void connection
+                      .ready(self.readiness !== 'ready')
+                      .catch((caught) =>
+                        setError(
+                          caught instanceof Error
+                            ? caught.message
+                            : fallbackError,
+                        ),
+                      )
+                      .finally(() => setPending(false));
+                  }}
+                >
+                  {pending
+                    ? '提交中…'
+                    : self.readiness === 'ready'
+                      ? '取消准备'
+                      : '准备'}
+                </Button>
+              </div>
+            )}
+            {(sessionState === 'disconnected' ||
+              sessionState === 'resuming') && (
+              <p className="notice">连接短暂中断，正在使用安全凭证恢复…</p>
+            )}
+            {error && (
+              <p className="error" role="alert">
+                {error}
               </p>
             )}
-            {error && <p className="error">{error}</p>}
-            <p className="task-note">
-              玩家列表、座位和准备操作将在任务 15 实现。
-            </p>
+            <button
+              className="back home-link"
+              type="button"
+              onClick={leaveForHome}
+            >
+              ← 返回首页并清除本房凭证
+            </button>
+          </Panel>
+        </section>
+      )}
+      {page === 'entered' && (!room || !self) && (
+        <section className="entered-wrap">
+          <Panel className="entered">
+            <Badge tone={sessionState === 'resuming' ? 'gold' : 'red'} dot>
+              {sessionState === 'resuming' || sessionState === 'connecting'
+                ? '正在恢复房间'
+                : '恢复失败'}
+            </Badge>
+            <i>续</i>
+            <h1>
+              {sessionState === 'resume-failed'
+                ? '无法恢复房间'
+                : '正在重新入座'}
+            </h1>
+            <p>{error || '正在验证当前浏览器保存的安全凭证…'}</p>
+            {sessionState === 'resume-failed' && (
+              <Button onClick={leaveForHome}>返回首页</Button>
+            )}
           </Panel>
         </section>
       )}

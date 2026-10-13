@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   connectToLobby,
   LobbyConnectionError,
+  resumeLobby,
   resolveWebSocketUrl,
 } from './realtime-client.js';
 
@@ -159,5 +160,125 @@ describe('websocket lobby client', () => {
       LobbyConnectionError,
     );
     expect(second.closed).toBe(true);
+  });
+
+  it('keeps the socket live, uses increasing sequences and only updates from authoritative snapshots', async () => {
+    const socket = new FakeSocket();
+    const operation = connectToLobby(
+      { kind: 'create', nickname: '甲', roomName: '好友桌', playerCount: 2 },
+      { url: 'ws://test/ws', createSocket: () => socket as never },
+    );
+    socket.open();
+    const create = JSON.parse(socket.sent[0]!);
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: create.requestId,
+      stateVersion: 1,
+    });
+    socket.message({
+      type: 'session.established',
+      ...meta,
+      roomId: 'room-1',
+      playerId: 'p1',
+      reconnectToken: 'a'.repeat(32),
+    });
+    socket.message({
+      type: 'state.player',
+      ...meta,
+      stateVersion: 1,
+      view: snapshot,
+    });
+    const connection = await operation.promise;
+    const seen: number[] = [];
+    connection.subscribe((next) => seen.push(next.public.stateVersion));
+
+    const ready = connection.ready(true);
+    const readyRequest = JSON.parse(socket.sent[1]!);
+    expect(readyRequest).toMatchObject({
+      type: 'room.ready',
+      actionSequence: 2,
+      expectedStateVersion: 1,
+      ready: true,
+    });
+    socket.message({
+      type: 'response.error',
+      ...meta,
+      requestId: readyRequest.requestId,
+      error: {
+        code: 'STALE_STATE',
+        message: '房间状态已更新',
+        retryable: true,
+      },
+    });
+    await expect(ready).rejects.toMatchObject({ message: '房间状态已更新' });
+    expect(connection.view.public.stateVersion).toBe(1);
+
+    const nextSnapshot = {
+      ...snapshot,
+      public: { ...snapshot.public, stateVersion: 2 },
+    };
+    socket.message({
+      type: 'state.player',
+      ...meta,
+      stateVersion: 2,
+      view: nextSnapshot,
+    });
+    expect(seen).toEqual([2]);
+    const start = connection.start();
+    const startRequest = JSON.parse(socket.sent[2]!);
+    expect(startRequest).toMatchObject({
+      type: 'room.start',
+      actionSequence: 3,
+      expectedStateVersion: 2,
+    });
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: startRequest.requestId,
+      stateVersion: 3,
+    });
+    await expect(start).resolves.toBeUndefined();
+  });
+
+  it('resumes with sequence one and adopts only the rotated credential', async () => {
+    const socket = new FakeSocket();
+    const operation = resumeLobby(
+      {
+        roomId: 'room-1' as never,
+        playerId: 'p1' as never,
+        reconnectToken: 'a'.repeat(32),
+      },
+      { url: 'ws://test/ws', createSocket: () => socket as never },
+    );
+    socket.open();
+    const request = JSON.parse(socket.sent[0]!);
+    expect(request).toMatchObject({
+      type: 'session.resume',
+      actionSequence: 1,
+      reconnectToken: 'a'.repeat(32),
+    });
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: request.requestId,
+      stateVersion: 1,
+    });
+    socket.message({
+      type: 'session.established',
+      ...meta,
+      roomId: 'room-1',
+      playerId: 'p1',
+      reconnectToken: 'b'.repeat(32),
+    });
+    socket.message({
+      type: 'state.player',
+      ...meta,
+      stateVersion: 1,
+      view: snapshot,
+    });
+    await expect(operation.promise).resolves.toMatchObject({
+      reconnectToken: 'b'.repeat(32),
+    });
   });
 });

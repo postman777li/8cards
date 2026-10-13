@@ -3,6 +3,8 @@ import {
   NICKNAME_STORAGE_KEY,
   SETTINGS_STORAGE_KEY,
   buildShareUrl,
+  clearCurrentSession,
+  loadCurrentSession,
   loadSettings,
   normalizeRoomCode,
   roomCodeFromUrl,
@@ -91,13 +93,26 @@ describe('local persistence', () => {
       roomId: 'room-2' as never,
       playerId: 'p2' as never,
       reconnectToken: 'b'.repeat(32),
-    });
-    expect(storage.length).toBe(3);
+      view: { forbidden: true },
+      socket: { forbidden: true },
+    } as never);
+    expect(storage.length).toBe(4);
     expect(storage.getItem(NICKNAME_STORAGE_KEY)).toBe('甲');
     expect(
       [...storage.data.keys()].filter((key) =>
-        key.startsWith('8cards:session:'),
+        /^8cards:session:room-/.test(key),
       ),
     ).toHaveLength(2);
+    expect(loadCurrentSession(storage)).toMatchObject({
+      roomId: 'room-2',
+      playerId: 'p2',
+      reconnectToken: 'b'.repeat(32),
+    });
+    expect(JSON.stringify([...storage.data.values()])).not.toContain(
+      'forbidden',
+    );
+    clearCurrentSession(storage);
+    expect(loadCurrentSession(storage)).toBeNull();
+    expect(storage.getItem(NICKNAME_STORAGE_KEY)).toBe('甲');
   });
 });

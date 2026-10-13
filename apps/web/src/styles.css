@@ -383,6 +383,142 @@ input:focus-visible,
   margin: auto;
   padding: 2rem 0 5rem;
 }
+.waiting-layout {
+  display: grid;
+  width: min(1180px, calc(100% - 3rem));
+  flex: 1;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 0.75fr);
+  gap: 1.25rem;
+  margin: 1rem auto 3rem;
+}
+.table-preview,
+.room-sidebar {
+  padding: clamp(1rem, 2.4vw, 2rem);
+}
+.table-preview {
+  min-height: 600px;
+}
+.room-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.room-title h1 {
+  margin: 0.25rem 0;
+  font:
+    clamp(1.8rem, 4vw, 3rem) Georgia,
+    serif;
+}
+.seat-grid {
+  position: relative;
+  display: grid;
+  min-height: 440px;
+  grid-template-columns: 1fr 1fr;
+  align-content: space-between;
+  gap: 5rem 2rem;
+  padding: 3rem 1rem;
+}
+.seat-grid .ui-seat {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  max-width: 260px;
+}
+.seat-grid .ui-seat:nth-child(even) {
+  justify-self: end;
+}
+.seats-2 .ui-seat {
+  align-self: center;
+}
+.seats-2 {
+  align-content: center;
+}
+.table-mark {
+  position: absolute;
+  display: grid;
+  inset: 50% auto auto 50%;
+  place-items: center;
+  translate: -50% -50%;
+  color: var(--yc-gold-300);
+}
+.table-mark b {
+  display: grid;
+  width: 76px;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid #d6a74f66;
+  border-radius: 50%;
+  font:
+    2.4rem Georgia,
+    serif;
+}
+.table-mark span {
+  margin-top: 0.5rem;
+  color: var(--yc-text-muted);
+  font-size: 0.68rem;
+}
+.room-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.room-code {
+  display: grid;
+  gap: 0.2rem;
+  border-bottom: 1px solid #ffffff17;
+  padding-bottom: 1rem;
+}
+.room-code span {
+  color: var(--yc-text-muted);
+  font-size: 0.72rem;
+}
+.room-code strong {
+  color: var(--yc-gold-300);
+  font-size: 2rem;
+  letter-spacing: 0.18em;
+}
+.room-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+.room-facts span {
+  border: 1px solid #ffffff17;
+  border-radius: 10px;
+  padding: 0.65rem;
+  color: var(--yc-text-muted);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.primary-action {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: auto;
+}
+.primary-action p {
+  margin: 0;
+  color: var(--yc-text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+.started-placeholder {
+  margin-top: auto;
+  border: 1px solid #d6a74f55;
+  border-radius: 14px;
+  padding: 1rem;
+  background: #d6a74f12;
+}
+.started-placeholder p {
+  margin-bottom: 0;
+  color: var(--yc-text-muted);
+  line-height: 1.6;
+}
+.home-link {
+  width: 100%;
+  text-align: center;
+}
 .entered {
   text-align: center;
 }
@@ -469,6 +605,18 @@ html[data-reduce-motion='true'] * {
   footer {
     flex-direction: column;
   }
+  .waiting-layout {
+    width: min(100% - 1.25rem, 620px);
+    grid-template-columns: 1fr;
+  }
+  .table-preview {
+    min-height: 480px;
+  }
+  .seat-grid {
+    min-height: 350px;
+    gap: 3.5rem 0.75rem;
+    padding-inline: 0;
+  }
 }
 @media (max-width: 480px) {
   .brand small {
@@ -492,6 +640,27 @@ html[data-reduce-motion='true'] * {
   }
   .share > span {
     white-space: normal;
+  }
+  .table-preview {
+    min-height: 360px;
+  }
+  .seat-grid {
+    min-height: 230px;
+    gap: 0.35rem;
+    padding-block: 0.5rem;
+  }
+  .seat-grid .ui-seat {
+    transform: scale(0.82);
+  }
+  .seat-grid .ui-seat:nth-child(odd) {
+    transform-origin: left center;
+  }
+  .seat-grid .ui-seat:nth-child(even) {
+    transform-origin: right center;
+  }
+  .table-mark b {
+    width: 58px;
+    font-size: 1.8rem;
   }
 }
 @media (max-height: 500px) and (orientation: landscape) {
@@ -536,6 +705,42 @@ html[data-reduce-motion='true'] * {
   }
   .modes button {
     min-height: 62px;
+  }
+  .waiting-layout {
+    width: calc(100% - 1.25rem);
+    grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+    gap: 0.65rem;
+    margin: 0 auto 0.5rem;
+  }
+  .table-preview,
+  .room-sidebar {
+    padding: 0.75rem;
+  }
+  .table-preview {
+    min-height: 280px;
+  }
+  .seat-grid {
+    min-height: 220px;
+    gap: 1rem;
+    padding: 0.5rem;
+  }
+  .seat-grid .ui-seat {
+    transform: scale(0.86);
+    transform-origin: center;
+  }
+  .room-title .eyebrow,
+  .table-mark span,
+  .room-facts {
+    display: none;
+  }
+  .room-title h1 {
+    font-size: 1.35rem;
+  }
+  .room-code strong {
+    font-size: 1.4rem;
+  }
+  .room-sidebar {
+    gap: 0.5rem;
   }
 }
 @media (prefers-reduced-motion: reduce) {

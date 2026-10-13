@@ -9,6 +9,7 @@ import {
 export const NICKNAME_STORAGE_KEY = '8cards:lobby:nickname';
 export const SETTINGS_STORAGE_KEY = '8cards:lobby:settings';
 const SESSION_STORAGE_PREFIX = '8cards:session:';
+const CURRENT_SESSION_STORAGE_KEY = '8cards:session:current';
 
 export interface LobbySettings {
   soundEffects: boolean;
@@ -90,8 +91,48 @@ export function saveSettings(storage: Storage, settings: LobbySettings): void {
 }
 
 export function saveSession(storage: Storage, session: StoredSession): void {
+  const key = `${SESSION_STORAGE_PREFIX}${session.roomId}:${session.playerId}`;
   storage.setItem(
-    `${SESSION_STORAGE_PREFIX}${session.roomId}:${session.playerId}`,
-    JSON.stringify(session),
+    key,
+    JSON.stringify({
+      roomId: session.roomId,
+      playerId: session.playerId,
+      reconnectToken: session.reconnectToken,
+    } satisfies StoredSession),
   );
+  storage.setItem(CURRENT_SESSION_STORAGE_KEY, key);
+}
+
+function isStoredSession(value: unknown): value is StoredSession {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.roomId === 'string' &&
+    typeof candidate.playerId === 'string' &&
+    typeof candidate.reconnectToken === 'string' &&
+    candidate.reconnectToken.length >= 32
+  );
+}
+
+export function loadCurrentSession(storage: Storage): StoredSession | null {
+  const key = storage.getItem(CURRENT_SESSION_STORAGE_KEY);
+  if (!key?.startsWith(SESSION_STORAGE_PREFIX)) return null;
+  try {
+    const value: unknown = JSON.parse(storage.getItem(key) ?? 'null');
+    return isStoredSession(value)
+      ? {
+          roomId: value.roomId,
+          playerId: value.playerId,
+          reconnectToken: value.reconnectToken,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearCurrentSession(storage: Storage): void {
+  const key = storage.getItem(CURRENT_SESSION_STORAGE_KEY);
+  if (key?.startsWith(SESSION_STORAGE_PREFIX)) storage.removeItem(key);
+  storage.removeItem(CURRENT_SESSION_STORAGE_KEY);
 }
