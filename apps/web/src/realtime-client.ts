@@ -66,6 +66,7 @@ export interface SpectatorConnection {
   socket: WebSocket;
   chat(message: string): Promise<void>;
   history(): Promise<void>;
+  leave(): Promise<void>;
   subscribe(listener: (view: SpectatorView) => void): () => void;
   subscribeChat(
     listener: (messages: readonly ChatMessage[]) => void,
@@ -449,6 +450,8 @@ class LiveSpectator implements SpectatorConnection {
   #histories = new Set<(value: VisitorHistory) => void>();
   #closes = new Set<() => void>();
   #messages: ChatMessage[] = [];
+  #closed = false;
+  #leavePromise?: Promise<void>;
   constructor(
     readonly roomId: RoomId,
     readonly spectatorId: SpectatorId,
@@ -459,6 +462,9 @@ class LiveSpectator implements SpectatorConnection {
   ) {
     socket.onmessage = ({ data }) => this.#receive(data);
     socket.onerror = socket.onclose = () => {
+      if (this.#closed) return;
+      this.#closed = true;
+      this.#rejectPending(new LobbyConnectionError('连接已中断'));
       for (const listener of this.#closes) listener();
     };
   }
@@ -470,6 +476,13 @@ class LiveSpectator implements SpectatorConnection {
   }
   history() {
     return this.#send('history.get', {});
+  }
+  leave() {
+    if (this.#leavePromise) return this.#leavePromise;
+    this.#leavePromise = this.#send('spectate.leave', {
+      expectedStateVersion: this.view.public.stateVersion,
+    });
+    return this.#leavePromise;
   }
   subscribe(listener: (view: SpectatorView) => void) {
     this.#views.add(listener);
@@ -489,9 +502,17 @@ class LiveSpectator implements SpectatorConnection {
     return () => this.#closes.delete(listener);
   }
   close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#rejectPending(new LobbyConnectionError('连接已关闭'));
     if (this.socket.readyState < 2) this.socket.close();
   }
-  #send(type: 'chat.send' | 'history.get', body: Record<string, unknown>) {
+  #send(
+    type: 'chat.send' | 'history.get' | 'spectate.leave',
+    body: Record<string, unknown>,
+  ) {
+    if (this.#closed)
+      return Promise.reject(new LobbyConnectionError('连接已中断'));
     const id = requestId();
     const event = parseClientEvent({
       type,
@@ -504,6 +525,10 @@ class LiveSpectator implements SpectatorConnection {
       this.#pending.set(id, { resolve, reject });
       this.socket.send(JSON.stringify(event));
     });
+  }
+  #rejectPending(error: Error) {
+    for (const pending of this.#pending.values()) pending.reject(error);
+    this.#pending.clear();
   }
   #receive(data: unknown) {
     let raw: unknown;

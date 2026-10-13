@@ -4,6 +4,7 @@ import {
   LobbyConnectionError,
   resumeLobby,
   resolveWebSocketUrl,
+  spectateRoom,
 } from './realtime-client.js';
 
 class FakeSocket {
@@ -419,5 +420,59 @@ describe('websocket lobby client', () => {
       });
       await expect(pending).rejects.toMatchObject({ message: '测试拒绝' });
     }
+  });
+
+  it('submits spectator leave once with the latest version and shares duplicate clicks', async () => {
+    const socket = new FakeSocket();
+    const operation = spectateRoom(
+      { nickname: '观众', roomCode: 'ABC123', visitorId: 'visitor-1' as never },
+      { url: 'ws://test/ws', createSocket: () => socket as never },
+    );
+    socket.open();
+    const join = JSON.parse(socket.sent[0]!);
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: join.requestId,
+      stateVersion: 4,
+    });
+    socket.message({
+      type: 'spectator.established',
+      ...meta,
+      roomId: 'room-1',
+      spectatorId: 's1',
+      reconnectToken: 's'.repeat(32),
+      visitorId: 'visitor-1',
+    });
+    socket.message({
+      type: 'state.spectator',
+      ...meta,
+      stateVersion: 4,
+      view: {
+        audience: 'spectator',
+        public: { ...snapshot.public, stateVersion: 4 },
+      },
+    });
+    const connection = await operation.promise;
+    const first = connection.leave();
+    const second = connection.leave();
+    expect(second).toBe(first);
+    expect(socket.sent).toHaveLength(2);
+    const leave = JSON.parse(socket.sent[1]!);
+    expect(leave).toMatchObject({
+      type: 'spectate.leave',
+      actionSequence: 2,
+      expectedStateVersion: 4,
+    });
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: leave.requestId,
+      stateVersion: 4,
+    });
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
   });
 });

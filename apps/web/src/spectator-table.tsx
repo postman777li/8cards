@@ -25,10 +25,14 @@ export function SpectatorTable({
   view,
   connection,
   onReturn,
+  leaving,
+  leaveError,
 }: {
   view: SpectatorView;
   connection: SpectatorConnection;
   onReturn: () => void;
+  leaving: boolean;
+  leaveError: string;
 }) {
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const [history, setHistory] = useState<VisitorHistory>();
@@ -104,8 +108,13 @@ export function SpectatorTable({
             {history && <p>本浏览器累计 {history.stats.games} 局</p>}
           </Panel>
         )}
-        <Button variant="ghost" onClick={onReturn}>
-          返回首页
+        {leaveError && (
+          <p className="error" role="alert">
+            {leaveError}
+          </p>
+        )}
+        <Button variant="ghost" onClick={onReturn} disabled={leaving}>
+          {leaving ? '正在安全离开…' : '返回首页'}
         </Button>
       </Panel>
       <Panel className="spectator-chat">

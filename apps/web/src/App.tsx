@@ -31,6 +31,10 @@ import {
 import { leaveWaitingRoom } from './waiting-room.js';
 import { GameTable } from './game-table.js';
 import { SpectatorTable } from './spectator-table.js';
+import {
+  leaveSpectatorRoom,
+  SPECTATOR_SESSION_STORAGE_KEY,
+} from './spectator-session.js';
 
 type Page = 'home' | 'create' | 'settings' | 'entered';
 type SessionState =
@@ -116,7 +120,7 @@ export default function App() {
     const storedSpectator = (() => {
       try {
         return JSON.parse(
-          localStorage.getItem('8cards:spectator:current') ?? 'null',
+          localStorage.getItem(SPECTATOR_SESSION_STORAGE_KEY) ?? 'null',
         ) as {
           roomId: never;
           spectatorId: never;
@@ -217,7 +221,7 @@ export default function App() {
     result.subscribe((next) => setSpectatorView(next));
     result.onDisconnect(() => setSessionState('disconnected'));
     localStorage.setItem(
-      '8cards:spectator:current',
+      SPECTATOR_SESSION_STORAGE_KEY,
       JSON.stringify({
         roomId: result.roomId,
         spectatorId: result.spectatorId,
@@ -238,7 +242,7 @@ export default function App() {
       });
       activateSpectator(await operation.promise);
     } catch {
-      localStorage.removeItem('8cards:spectator:current');
+      localStorage.removeItem(SPECTATOR_SESSION_STORAGE_KEY);
       setSessionState('resume-failed');
     }
   };
@@ -267,6 +271,24 @@ export default function App() {
         },
       );
       activateSpectator(await operation.promise);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : fallbackError);
+    } finally {
+      setPending(false);
+    }
+  };
+  const leaveSpectating = async () => {
+    const current = activeSpectator.current;
+    if (!current || pending) return;
+    setPending(true);
+    setError('');
+    try {
+      await leaveSpectatorRoom(current, localStorage);
+      current.close();
+      activeSpectator.current = null;
+      setSpectatorConnection(undefined);
+      setSpectatorView(undefined);
+      go('home');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : fallbackError);
     } finally {
@@ -582,14 +604,9 @@ export default function App() {
         <SpectatorTable
           view={spectatorView}
           connection={spectatorConnection}
-          onReturn={() => {
-            spectatorConnection.close();
-            activeSpectator.current = null;
-            setSpectatorConnection(undefined);
-            setSpectatorView(undefined);
-            localStorage.removeItem('8cards:spectator:current');
-            go('home');
-          }}
+          leaving={pending}
+          leaveError={error}
+          onReturn={() => void leaveSpectating()}
         />
       )}
       {page === 'entered' && room && self && !view?.public.game && (

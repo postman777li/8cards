@@ -6,6 +6,11 @@ import { WebSocket } from 'ws';
 import { compareCards } from '@8cards/game-engine';
 
 import { createApp, type AppServer } from './app.js';
+import {
+  SqliteHistoryStore,
+  type HistoryStore,
+  type PersistedGame,
+} from './history-store.js';
 
 interface ReceivedEvent {
   type: string;
@@ -75,7 +80,10 @@ afterEach(async () => {
   servers.clear();
 });
 
-const start = async (randomOverride?: () => number) => {
+const start = async (
+  randomOverride?: () => number,
+  historyStore?: HistoryStore,
+) => {
   let randomState = 0x12345678;
   const server = createApp({
     random:
@@ -86,6 +94,7 @@ const start = async (randomOverride?: () => number) => {
         randomState ^= randomState << 5;
         return (randomState >>> 0) / 0x1_0000_0000;
       }),
+    ...(historyStore ? { historyStore } : {}),
   });
   servers.add(server);
   server.listen(0, '127.0.0.1');
@@ -180,6 +189,25 @@ const setupGame = async (count: 2 | 3 | 4, wsUrl: string) => {
   return { all, credentials, hostCredential, startedVersion };
 };
 
+class FailOnceHistoryStore implements HistoryStore {
+  readonly inner = new SqliteHistoryStore(':memory:');
+  attempts = 0;
+  saveGame(game: PersistedGame) {
+    this.attempts += 1;
+    if (this.attempts === 1) throw new Error('injected write failure');
+    return this.inner.saveGame(game);
+  }
+  getVisitorHistory(
+    visitorId: Parameters<HistoryStore['getVisitorHistory']>[0],
+    limit?: number,
+  ) {
+    return this.inner.getVisitorHistory(visitorId, limit);
+  }
+  close() {
+    this.inner.close();
+  }
+}
+
 describe('HTTP and WebSocket transport', () => {
   it('serves health and rejects the wrong upgrade path', async () => {
     const { httpUrl } = await start();
@@ -214,6 +242,117 @@ describe('HTTP and WebSocket transport', () => {
 });
 
 describe('real multi-client games', () => {
+  it('keeps a finished authority pending after the first write failure and retries exactly once through history', async () => {
+    const historyStore = new FailOnceHistoryStore();
+    const { wsUrl } = await start(undefined, historyStore);
+    const game = await setupGame(2, wsUrl);
+    const entries = await Promise.all(
+      game.all.map(async (client) => ({
+        client,
+        credential: await client.waitFor(
+          (event) => event.type === 'session.established',
+        ),
+      })),
+    );
+    const sequences = new Map(game.all.map((client) => [client, 3]));
+    let version = game.startedVersion;
+    let finishedState: ReceivedEvent | undefined;
+    for (let step = 0; step < 80 && !finishedState; step += 1) {
+      const state = await game.all[0]!.waitFor(
+        (event) =>
+          event.type === 'state.player' && event.stateVersion === version,
+      );
+      const publicGame = (
+        state.view as {
+          public: {
+            game: { phase: string; currentActorId: string; defenderId: string };
+          };
+        }
+      ).public.game;
+      if (publicGame.phase === 'finished') {
+        finishedState = state;
+        break;
+      }
+      const actor = entries.find(
+        (entry) => entry.credential.playerId === publicGame.currentActorId,
+      )!;
+      const actorState = await actor.client.waitFor(
+        (event) =>
+          event.type === 'state.player' && event.stateVersion === version,
+      );
+      const hand = (
+        actorState.view as {
+          private: { hand: Array<{ id: string; kind: string }> };
+        }
+      ).private.hand;
+      const card = hand.find((item) => item.kind === 'standard');
+      if (!card) throw new Error('unfinished actor has no attack card');
+      const attackSequence = sequences.get(actor.client)!;
+      sequences.set(actor.client, attackSequence + 1);
+      const attacked = await request(actor.client, {
+        type: 'game.action',
+        ...meta(`persist-attack-${step}`, attackSequence),
+        expectedStateVersion: version,
+        action: { kind: 'play-card', cardId: card.id },
+      });
+      version = attacked.stateVersion as number;
+      const afterAttack = await game.all[0]!.waitFor(
+        (event) =>
+          event.type === 'state.player' && event.stateVersion === version,
+      );
+      const afterGame = (
+        afterAttack.view as {
+          public: { game: { phase: string; defenderId: string } };
+        }
+      ).public.game;
+      if (afterGame.phase === 'finished') {
+        finishedState = afterAttack;
+        break;
+      }
+      const defender = entries.find(
+        (entry) => entry.credential.playerId === afterGame.defenderId,
+      )!;
+      const defendSequence = sequences.get(defender.client)!;
+      sequences.set(defender.client, defendSequence + 1);
+      const collected = await request(defender.client, {
+        type: 'game.action',
+        ...meta(`persist-collect-${step}`, defendSequence),
+        expectedStateVersion: version,
+        action: { kind: 'collect' },
+      });
+      version = collected.stateVersion as number;
+    }
+    expect(finishedState).toBeDefined();
+    expect(historyStore.attempts).toBe(1);
+    const viewer = entries[0]!;
+    const firstSequence = sequences.get(viewer.client)!;
+    sequences.set(viewer.client, firstSequence + 1);
+    await request(viewer.client, {
+      type: 'history.get',
+      ...meta('history-pending', firstSequence),
+    });
+    const pending = [...viewer.client.events]
+      .reverse()
+      .find((event) => event.type === 'history.result')!;
+    expect(pending).toMatchObject({
+      persistenceStatus: 'pending',
+      stats: { games: 0 },
+    });
+    expect(historyStore.attempts).toBe(2);
+    const secondSequence = sequences.get(viewer.client)!;
+    await request(viewer.client, {
+      type: 'history.get',
+      ...meta('history-saved', secondSequence),
+    });
+    const saved = [...viewer.client.events]
+      .reverse()
+      .find((event) => event.type === 'history.result')!;
+    expect(saved).toMatchObject({
+      persistenceStatus: 'saved',
+      stats: { games: 1 },
+    });
+    expect(historyStore.attempts).toBe(2);
+  });
   it('isolates spectators, restores them, and applies independent chat limits', async () => {
     const { wsUrl } = await start();
     const { all, startedVersion } = await setupGame(2, wsUrl);
@@ -286,6 +425,96 @@ describe('real multi-client games', () => {
     );
     expect(history.messages as unknown[]).toHaveLength(5);
     expect(resumed.raw.join('')).not.toContain('"private"');
+  });
+
+  it('removes a leaving spectator from public state and immediately releases capacity', async () => {
+    const { wsUrl } = await start();
+    const host = await connect(wsUrl);
+    await request(host, {
+      type: 'room.create',
+      ...meta('capacity-create', 1),
+      nickname: '房主',
+      roomName: '观战容量',
+      config: {
+        playerCount: 2,
+        allowSpectators: true,
+        allowChat: true,
+        turnTimeoutSeconds: 20,
+      },
+    });
+    const initial = await host.waitFor(
+      (event) => event.type === 'state.player',
+    );
+    const room = (initial.view as { public: { room: { code: string } } }).public
+      .room;
+    const spectators: TestClient[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      const spectator = await connect(wsUrl);
+      spectators.push(spectator);
+      const joined = await request(spectator, {
+        type: 'spectate.join',
+        ...meta(`capacity-${index}`, 1),
+        nickname: `观众${index}`,
+        roomCode: room.code,
+        visitorId: `visitor-${index}`,
+      });
+      expect(joined.type).toBe('response.ok');
+    }
+    const overflow = await connect(wsUrl);
+    const full = await request(overflow, {
+      type: 'spectate.join',
+      ...meta('capacity-full', 1),
+      nickname: '第21人',
+      roomCode: room.code,
+      visitorId: 'visitor-full',
+    });
+    expect((full.error as { code: string }).code).toBe('SPECTATOR_FULL');
+    const leaving = spectators[0]!;
+    const credential = await leaving.waitFor(
+      (event) => event.type === 'spectator.established',
+    );
+    const left = await request(leaving, {
+      type: 'spectate.leave',
+      ...meta('capacity-leave', 2),
+      expectedStateVersion: 0,
+    });
+    expect(left.type).toBe('response.ok');
+    const latest = await host.waitFor(
+      (event) =>
+        event.type === 'state.player' &&
+        (
+          event.view as {
+            public: { room: { spectators: Array<{ spectatorId: string }> } };
+          }
+        ).public.room.spectators.length === 19 &&
+        !(
+          event.view as {
+            public: { room: { spectators: Array<{ spectatorId: string }> } };
+          }
+        ).public.room.spectators.some(
+          (item) => item.spectatorId === credential.spectatorId,
+        ),
+    );
+    const publicSpectators = (
+      latest.view as {
+        public: { room: { spectators: Array<{ spectatorId: string }> } };
+      }
+    ).public.room.spectators;
+    expect(publicSpectators).toHaveLength(19);
+    expect(
+      publicSpectators.some(
+        (item) => item.spectatorId === credential.spectatorId,
+      ),
+    ).toBe(false);
+    const replacement = await connect(wsUrl);
+    const replacementJoin = await request(replacement, {
+      type: 'spectate.join',
+      ...meta('capacity-replacement', 1),
+      nickname: '替补观众',
+      roomCode: room.code,
+      visitorId: 'visitor-replacement',
+    });
+    expect(replacementJoin.type).toBe('response.ok');
   });
   it('validates start eligibility before initialization and preserves state on every failure', async () => {
     const { wsUrl } = await start();

@@ -640,13 +640,13 @@ export class RealtimeService {
       return { stateVersion: runtime.stateVersion };
     }
     if (event.type === 'history.get') {
-      this.#settleIfFinished(runtime);
+      const finished = runtime.authority?.state.phase === 'finished';
       const history = this.#history.getVisitorHistory(identity.visitorId, 20);
       this.#send(socket, {
         type: 'history.result',
         protocolVersion: PROTOCOL_VERSION,
         ...history,
-        ...(runtime.authority?.state.phase === 'finished'
+        ...(finished
           ? {
               persistenceStatus: runtime.settled
                 ? ('saved' as const)
@@ -654,6 +654,7 @@ export class RealtimeService {
             }
           : {}),
       });
+      if (finished && !runtime.settled) this.#settleIfFinished(runtime);
       return { stateVersion: runtime.stateVersion };
     }
     if (event.type === 'spectate.leave') {
