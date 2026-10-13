@@ -13,5 +13,8 @@
   },
   "devDependencies": {
     "tsx": "^4.21.0"
+  },
+  "dependencies": {
+    "@8cards/shared": "workspace:*"
   }
 }
