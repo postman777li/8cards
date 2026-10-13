@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ClientEvent, ServerEvent } from './events.js';
-import { clientEventSchema, serverEventSchema } from './events.js';
+import {
+  clientEventSchema,
+  publicServerEventSchema,
+  serverEventSchema,
+} from './events.js';
 import {
   opponentViewSchema,
   playerViewSchema,
@@ -212,6 +216,13 @@ describe('server protocol validation', () => {
       error: { code: 'STALE_STATE', message: '状态已更新', retryable: true },
     },
     {
+      type: 'session.established',
+      protocolVersion: 1,
+      roomId: 'room-1',
+      playerId: 'p1',
+      reconnectToken: 'a'.repeat(32),
+    },
+    {
       type: 'state.player',
       protocolVersion: 1,
       stateVersion: 0,
@@ -258,6 +269,25 @@ describe('server protocol validation', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('keeps session credentials individual and strictly validated', () => {
+    const credential = {
+      type: 'session.established',
+      protocolVersion: 1,
+      roomId: 'room-1',
+      playerId: 'p1',
+      reconnectToken: 'a'.repeat(32),
+    };
+    expect(serverEventSchema.safeParse(credential).success).toBe(true);
+    expect(
+      serverEventSchema.safeParse({ ...credential, unexpected: true }).success,
+    ).toBe(false);
+    expect(
+      serverEventSchema.safeParse({ ...credential, reconnectToken: 'short' })
+        .success,
+    ).toBe(false);
+    expect(publicServerEventSchema.safeParse(credential).success).toBe(false);
+  });
 });
 
 function clientEventType(event: ClientEvent): string {
@@ -281,6 +311,7 @@ function serverEventType(event: ServerEvent): string {
   switch (event.type) {
     case 'response.ok':
     case 'response.error':
+    case 'session.established':
     case 'state.player':
     case 'state.spectator':
     case 'state.public':

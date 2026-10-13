@@ -8,6 +8,7 @@ import {
   requestIdSchema,
   stateVersionSchema,
   timestampSchema,
+  roomIdSchema,
 } from './common.js';
 import {
   playerViewSchema,
@@ -111,6 +112,13 @@ const responseErrorSchema = z.strictObject({
   requestId: requestIdSchema,
   error: protocolErrorSchema,
 });
+export const sessionEstablishedEventSchema = z.strictObject({
+  type: z.literal('session.established'),
+  protocolVersion: protocolVersionSchema,
+  roomId: roomIdSchema,
+  playerId: playerIdSchema,
+  reconnectToken: z.string().min(32).max(256),
+});
 const playerSnapshotEventSchema = z.strictObject({
   type: z.literal('state.player'),
   protocolVersion: protocolVersionSchema,
@@ -126,6 +134,7 @@ const spectatorSnapshotEventSchema = z.strictObject({
 export const individualServerEventSchema = z.discriminatedUnion('type', [
   responseOkSchema,
   responseErrorSchema,
+  sessionEstablishedEventSchema,
   playerSnapshotEventSchema,
   spectatorSnapshotEventSchema,
 ]);
