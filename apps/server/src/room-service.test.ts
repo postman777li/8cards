@@ -402,6 +402,13 @@ describe('RoomService permissions and lifecycle', () => {
       }),
     ).toBeUndefined();
     expectCode(() => service.getRoomByCode(host.room.code), 'ROOM_NOT_FOUND');
+    expect(
+      service.createRoom({
+        nickname: '再来一桌',
+        roomName: '复用短码',
+        config: config(2),
+      }).room.code,
+    ).toBe(host.room.code);
     expectCode(
       () =>
         service.restoreSession({

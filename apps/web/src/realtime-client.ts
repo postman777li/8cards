@@ -32,6 +32,7 @@ export interface LobbyConnection {
   socket: WebSocket;
   ready(value: boolean): Promise<void>;
   start(): Promise<void>;
+  leave(): Promise<void>;
   subscribe(listener: (view: PlayerView) => void): () => void;
   onDisconnect(listener: () => void): () => void;
   close(): void;
@@ -89,6 +90,9 @@ class LiveConnection implements LobbyConnection {
   start() {
     return this.#send('room.start', {});
   }
+  leave() {
+    return this.#send('room.leave', {});
+  }
   subscribe(listener: (view: PlayerView) => void) {
     this.#views.add(listener);
     return () => this.#views.delete(listener);
@@ -104,7 +108,10 @@ class LiveConnection implements LobbyConnection {
     this.socket.onmessage = this.socket.onerror = this.socket.onclose = null;
     if (this.socket.readyState < 2) this.socket.close();
   }
-  #send(type: 'room.ready' | 'room.start', body: { ready?: boolean }) {
+  #send(
+    type: 'room.ready' | 'room.start' | 'room.leave',
+    body: { ready?: boolean },
+  ) {
     if (this.#closed || this.#pending.size)
       return Promise.reject(new LobbyConnectionError('操作正在处理中'));
     const id = requestId();

@@ -281,4 +281,53 @@ describe('websocket lobby client', () => {
       reconnectToken: 'b'.repeat(32),
     });
   });
+
+  it('leaves with the latest version and rejects duplicate in-flight submission', async () => {
+    const socket = new FakeSocket();
+    const operation = connectToLobby(
+      { kind: 'create', nickname: '甲', roomName: '好友桌', playerCount: 2 },
+      { url: 'ws://test/ws', createSocket: () => socket as never },
+    );
+    socket.open();
+    const create = JSON.parse(socket.sent[0]!);
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: create.requestId,
+      stateVersion: 1,
+    });
+    socket.message({
+      type: 'session.established',
+      ...meta,
+      roomId: 'room-1',
+      playerId: 'p1',
+      reconnectToken: 'a'.repeat(32),
+    });
+    socket.message({
+      type: 'state.player',
+      ...meta,
+      stateVersion: 1,
+      view: snapshot,
+    });
+    const connection = await operation.promise;
+
+    const leaving = connection.leave();
+    const leaveRequest = JSON.parse(socket.sent[1]!);
+    expect(leaveRequest).toMatchObject({
+      type: 'room.leave',
+      actionSequence: 2,
+      expectedStateVersion: 1,
+    });
+    await expect(connection.leave()).rejects.toMatchObject({
+      message: '操作正在处理中',
+    });
+    expect(socket.sent).toHaveLength(2);
+    socket.message({
+      type: 'response.ok',
+      ...meta,
+      requestId: leaveRequest.requestId,
+      stateVersion: 2,
+    });
+    await expect(leaving).resolves.toBeUndefined();
+  });
 });

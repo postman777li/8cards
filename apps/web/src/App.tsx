@@ -3,7 +3,6 @@ import { Badge, Button, Panel, PlayerSeat } from '@8cards/ui';
 import {
   NICKNAME_STORAGE_KEY,
   buildShareUrl,
-  clearCurrentSession,
   loadCurrentSession,
   loadSettings,
   normalizeNickname,
@@ -25,6 +24,7 @@ import {
   type LobbyConnection,
   type LobbyRequest,
 } from './realtime-client.js';
+import { leaveWaitingRoom } from './waiting-room.js';
 
 type Page = 'home' | 'create' | 'settings' | 'entered';
 type SessionState =
@@ -236,10 +236,32 @@ export default function App() {
     setCopied(false);
     setPage(next);
   };
-  const leaveForHome = () => {
+  const finishReturnHome = () => {
     activeConnection.current?.close();
     activeConnection.current = null;
-    clearCurrentSession(localStorage);
+    setConnection(undefined);
+    setView(undefined);
+    go('home');
+  };
+  const requestLeave = async () => {
+    const current = activeConnection.current;
+    if (!current || pending || sessionState !== 'waiting-room') return;
+    setPending(true);
+    setError('');
+    try {
+      await leaveWaitingRoom(current, localStorage);
+      finishReturnHome();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : fallbackError);
+    } finally {
+      setPending(false);
+    }
+  };
+  const returnHomePreservingSession = () => {
+    activeCancel.current?.();
+    activeCancel.current = null;
+    activeConnection.current?.close();
+    activeConnection.current = null;
     setConnection(undefined);
     setView(undefined);
     go('home');
@@ -617,13 +639,22 @@ export default function App() {
                 {error}
               </p>
             )}
-            <button
-              className="back home-link"
-              type="button"
-              onClick={leaveForHome}
-            >
-              ← 返回首页并清除本房凭证
-            </button>
+            {sessionState === 'waiting-room' ? (
+              <button
+                className="back home-link"
+                type="button"
+                disabled={pending}
+                onClick={() => void requestLeave()}
+              >
+                {pending ? '正在安全离开…' : '← 离开房间并返回首页'}
+              </button>
+            ) : (
+              <button className="back home-link" type="button" disabled>
+                {sessionState === 'started'
+                  ? '对局已开始，暂不支持主动离开'
+                  : '恢复连接后可安全离开房间'}
+              </button>
+            )}
           </Panel>
         </section>
       )}
@@ -643,7 +674,22 @@ export default function App() {
             </h1>
             <p>{error || '正在验证当前浏览器保存的安全凭证…'}</p>
             {sessionState === 'resume-failed' && (
-              <Button onClick={leaveForHome}>返回首页</Button>
+              <div className="recovery-actions">
+                <Button
+                  onClick={() => {
+                    recoveryAttempt.current = 0;
+                    void recover();
+                  }}
+                >
+                  重试恢复
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={returnHomePreservingSession}
+                >
+                  保留凭证返回首页
+                </Button>
+              </div>
             )}
           </Panel>
         </section>
