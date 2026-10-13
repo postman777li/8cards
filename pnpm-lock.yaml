@@ -57,6 +57,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@8cards/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@8cards/ui':
         specifier: workspace:*
         version: link:../../packages/ui
