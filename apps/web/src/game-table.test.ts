@@ -133,7 +133,11 @@ describe('game table authority mapping', () => {
     } as GamePublicState;
     expect(resultCopy(team, team.players[2]!.playerId)).toEqual({
       title: '你所在的队伍落败',
-      detail: '本局因你触发憋王结束。',
+      detail: '本局因本队憋王结束。',
+    });
+    expect(resultCopy(team, team.players[0]!.playerId)).toEqual({
+      title: '你所在的队伍获胜',
+      detail: '本局因对方队伍憋王结束。',
     });
   });
 

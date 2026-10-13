@@ -166,10 +166,12 @@ export const resultCopy = (game: GamePublicState, viewerPlayerId: PlayerId) => {
         : '本局结束';
   const detail =
     game.resultReason === 'stuck-with-jokers'
-      ? lost || (!teamGame && winners.length > 0 && !won)
-        ? '本局因你触发憋王结束。'
-        : teamGame && !won
-          ? '本局因队友触发憋王结束。'
+      ? teamGame
+        ? lost
+          ? '本局因本队憋王结束。'
+          : '本局因对方队伍憋王结束。'
+        : lost || (winners.length > 0 && !won)
+          ? '本局因你触发憋王结束。'
           : '本局因对手触发憋王结束。'
       : '本局由玩家率先出完手牌结束。';
   return { title, detail };
