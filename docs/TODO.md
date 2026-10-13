@@ -13,8 +13,8 @@
 
 ## 当前进度
 
-- 已完成：03
-- 下一项：04 UI 视觉原型与设计系统
+- 已完成：04
+- 下一项：05 共享类型与通信协议
 - 总任务数：20
 
 ## 阶段一 规则和项目基础
@@ -43,9 +43,9 @@
   - 不实现游戏业务。
   - 完成条件：安装、检查、测试和构建全部通过。
   - 执行记录：已在任务分支完成；`pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm test`、`pnpm build` 均通过。
-  - 启动验证：网页开发服务器返回 HTTP 200；服务端 `/health` 返回 `status: ok`。等待总控验收与合并，复选框保持未勾选。
+  - 启动验证：网页开发服务器返回 HTTP 200；服务端 `/health` 返回 `status: ok`；已通过总控验收并合并到 `main`。
 
-- [ ] **04 UI 视觉原型与设计系统** `design/ui-foundation`
+- [x] **04 UI 视觉原型与设计系统** `design/ui-foundation`
   - 窗口提示词：`docs/prompts/task-04-ui-foundation.md`
   - 参考成熟斗地主产品的信息结构和交互习惯。
   - 设计原创首页、房间、电脑牌桌和手机横屏牌桌原型。
@@ -55,9 +55,10 @@
   - 完成条件：关键页面可预览，电脑和手机布局通过视觉检查。
   - 执行记录：已在任务分支完成首页、创建房间、等待房间、游戏牌桌、结算页，以及按钮、面板、徽章、座位和扑克牌共享组件；全部使用本地模拟状态，不接入业务服务。
   - 视觉验收：使用 1440 × 900 与 844 × 390 对五个场景逐页截图检查，未发现明显溢出、遮挡、文字过小、卡牌难辨或核心按钮拥挤；焦点态、非颜色状态标签和 `prefers-reduced-motion` 已纳入样式。
-  - 验证结果：`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm test`、`pnpm build` 均通过；复选框保持未勾选，等待总控验收与合并。
+  - 验证结果：总控重新运行 `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm test`、`pnpm build`，全部通过；复核桌面端和手机横屏共 10 张截图后快进合并并推送到 `origin/main`。
 
 - [ ] **05 共享类型与通信协议** `feature/shared-protocol`
+  - 窗口提示词：`docs/prompts/task-05-shared-protocol.md`
   - 定义玩家、房间、卡牌、公开状态、私有状态、动作和错误类型。
   - 定义客户端与服务端事件协议。
   - 明确观战者和玩家可见数据边界。
