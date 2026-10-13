@@ -87,31 +87,59 @@ interface StoredRoom {
   players: StoredPlayer[];
   lifecycle: RoomLifecycle;
   stateVersion: number;
+  revision: number;
 }
 
 export interface RoomStore {
   getById(roomId: RoomId): StoredRoom | undefined;
   getByCode(code: string): StoredRoom | undefined;
-  save(room: StoredRoom): void;
-  delete(room: StoredRoom): void;
+  insert(room: StoredRoom): boolean;
+  update(room: StoredRoom, expectedRevision: number): boolean;
+  delete(roomId: RoomId, expectedRevision: number): boolean;
 }
+
+const cloneStoredRoom = (room: StoredRoom): StoredRoom => ({
+  ...room,
+  config: { ...room.config },
+  players: room.players.map((player) => ({
+    ...player,
+    tokenDigest: Buffer.from(player.tokenDigest),
+  })),
+});
 
 export class InMemoryRoomStore implements RoomStore {
   readonly #byId = new Map<RoomId, StoredRoom>();
   readonly #byCode = new Map<string, StoredRoom>();
   getById(roomId: RoomId) {
-    return this.#byId.get(roomId);
+    const room = this.#byId.get(roomId);
+    return room && cloneStoredRoom(room);
   }
   getByCode(code: string) {
-    return this.#byCode.get(code);
+    const room = this.#byCode.get(code);
+    return room && cloneStoredRoom(room);
   }
-  save(room: StoredRoom) {
-    this.#byId.set(room.roomId, room);
-    this.#byCode.set(room.code, room);
+  insert(room: StoredRoom) {
+    if (this.#byId.has(room.roomId) || this.#byCode.has(room.code))
+      return false;
+    const stored = cloneStoredRoom(room);
+    this.#byId.set(stored.roomId, stored);
+    this.#byCode.set(stored.code, stored);
+    return true;
   }
-  delete(room: StoredRoom) {
-    this.#byId.delete(room.roomId);
-    this.#byCode.delete(room.code);
+  update(room: StoredRoom, expectedRevision: number) {
+    const current = this.#byId.get(room.roomId);
+    if (!current || current.revision !== expectedRevision) return false;
+    const stored = cloneStoredRoom(room);
+    this.#byId.set(stored.roomId, stored);
+    this.#byCode.set(stored.code, stored);
+    return true;
+  }
+  delete(roomId: RoomId, expectedRevision: number) {
+    const current = this.#byId.get(roomId);
+    if (!current || current.revision !== expectedRevision) return false;
+    this.#byId.delete(roomId);
+    this.#byCode.delete(current.code);
+    return true;
   }
 }
 
@@ -170,45 +198,41 @@ export class RoomService {
     if (!nickname.success || !name.success || !config.success) {
       return invalid('房间创建参数无效');
     }
-    let code: string | undefined;
-    for (let attempt = 0; attempt < this.#maxCodeAttempts; attempt += 1) {
-      const candidate = roomCodeSchema.safeParse(this.#roomCode());
-      if (!candidate.success) return invalid('短码生成器返回了无效短码');
-      if (!this.#store.getByCode(candidate.data)) {
-        code = candidate.data;
-        break;
-      }
-    }
-    if (!code)
-      throw new RoomServiceError(
-        'CODE_GENERATION_FAILED',
-        '无法生成唯一房间短码',
-      );
     const roomId = roomIdSchema.parse(this.#roomId());
     const playerId = playerIdSchema.parse(this.#playerId());
     const token = this.#token();
-    const room: StoredRoom = {
-      roomId,
-      name: name.data,
-      code,
-      config: { ...config.data },
-      lifecycle: 'waiting',
-      stateVersion: 0,
-      players: [
-        {
-          identity: 'player',
-          playerId,
-          nickname: nickname.data,
-          seat: 0,
-          isHost: true,
-          connection: 'online',
-          readiness: 'not-ready',
-          tokenDigest: digest(token),
-        },
-      ],
-    };
-    this.#store.save(room);
-    return this.#session(room, playerId, token);
+    for (let attempt = 0; attempt < this.#maxCodeAttempts; attempt += 1) {
+      const candidate = roomCodeSchema.safeParse(this.#roomCode());
+      if (!candidate.success) return invalid('短码生成器返回了无效短码');
+      const room: StoredRoom = {
+        roomId,
+        name: name.data,
+        code: candidate.data,
+        config: { ...config.data },
+        lifecycle: 'waiting',
+        stateVersion: 0,
+        revision: 0,
+        players: [
+          {
+            identity: 'player',
+            playerId,
+            nickname: nickname.data,
+            seat: 0,
+            isHost: true,
+            connection: 'online',
+            readiness: 'not-ready',
+            tokenDigest: digest(token),
+          },
+        ],
+      };
+      if (this.#store.insert(room)) {
+        return this.#session(room, playerId, token);
+      }
+    }
+    throw new RoomServiceError(
+      'CODE_GENERATION_FAILED',
+      '无法生成唯一房间短码',
+    );
   }
 
   joinRoom(input: { roomCode: string; nickname: string }): PlayerSession {
@@ -240,6 +264,7 @@ export class RoomService {
       tokenDigest: digest(token),
     });
     room.stateVersion += 1;
+    this.#persist(room);
     return this.#session(room, playerId, token);
   }
 
@@ -263,6 +288,7 @@ export class RoomService {
     this.#version(room, input.expectedStateVersion);
     player.readiness = input.ready ? 'ready' : 'not-ready';
     room.stateVersion += 1;
+    this.#persist(room);
     return this.#snapshot(room);
   }
 
@@ -287,6 +313,7 @@ export class RoomService {
       throw new RoomServiceError('PLAYERS_NOT_READY', '仍有玩家未准备');
     room.lifecycle = 'started';
     room.stateVersion += 1;
+    this.#persist(room);
     const snapshot = this.#snapshot(room);
     return {
       roomId: snapshot.roomId,
@@ -307,7 +334,9 @@ export class RoomService {
     this.#version(room, input.expectedStateVersion);
     room.players = room.players.filter((candidate) => candidate !== player);
     if (room.players.length === 0) {
-      this.#store.delete(room);
+      if (!this.#store.delete(room.roomId, room.revision)) {
+        throw new RoomServiceError('STALE_STATE', '房间状态已更新');
+      }
       return undefined;
     }
     if (player.isHost) {
@@ -315,6 +344,7 @@ export class RoomService {
       if (host) host.isHost = true;
     }
     room.stateVersion += 1;
+    this.#persist(room);
     return this.#snapshot(room);
   }
 
@@ -329,6 +359,7 @@ export class RoomService {
     if (player.connection !== 'disconnected') {
       player.connection = 'disconnected';
       room.stateVersion += 1;
+      this.#persist(room);
     }
     return this.#snapshot(room);
   }
@@ -345,6 +376,7 @@ export class RoomService {
       player.connection = 'online';
       room.stateVersion += 1;
     }
+    this.#persist(room, 'UNAUTHORIZED');
     return this.#session(room, player.playerId, token);
   }
 
@@ -372,6 +404,20 @@ export class RoomService {
   #version(room: StoredRoom, expected: number) {
     if (room.stateVersion !== expected)
       throw new RoomServiceError('STALE_STATE', '房间状态已更新');
+  }
+  #persist(
+    room: StoredRoom,
+    conflictCode: 'STALE_STATE' | 'UNAUTHORIZED' = 'STALE_STATE',
+  ) {
+    const expectedRevision = room.revision;
+    room.revision += 1;
+    if (!this.#store.update(room, expectedRevision)) {
+      room.revision = expectedRevision;
+      throw new RoomServiceError(
+        conflictCode,
+        conflictCode === 'UNAUTHORIZED' ? '会话凭证无效' : '房间状态已更新',
+      );
+    }
   }
   #snapshot(room: StoredRoom): RoomSnapshot {
     return {
