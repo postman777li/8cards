@@ -4,6 +4,7 @@ import type {
   CardId,
   GameAction,
   GamePublicState,
+  PlayerId,
   PlayerView,
 } from '@8cards/shared';
 import { Badge, Button, Panel, PlayerSeat, PlayingCard } from '@8cards/ui';
@@ -104,6 +105,76 @@ const suitName = (suit: GamePublicState['trumpSuit']) =>
 const roleName = (role: 'attacker' | 'defender' | 'observer') =>
   ({ attacker: '进攻方', defender: '防守方', observer: '旁观位' })[role];
 
+export type RelativeSeat = 'self' | 'right' | 'top' | 'left';
+
+export const relativeSeatMap = (
+  seats: readonly { playerId: string; seat: number }[],
+  viewerPlayerId: string,
+): Map<string, RelativeSeat> => {
+  const ordered = [...seats].sort((left, right) => left.seat - right.seat);
+  const viewerIndex = ordered.findIndex(
+    (player) => player.playerId === viewerPlayerId,
+  );
+  if (viewerIndex < 0) return new Map();
+  const positions: Record<number, readonly RelativeSeat[]> = {
+    2: ['self', 'top'],
+    3: ['self', 'right', 'left'],
+    4: ['self', 'right', 'top', 'left'],
+  };
+  const layout = positions[ordered.length] ?? [];
+  return new Map(
+    ordered.map((player, index) => [
+      player.playerId,
+      layout[(index - viewerIndex + ordered.length) % ordered.length]!,
+    ]),
+  );
+};
+
+export const playerRoleLabel = (
+  player: GamePublicState['players'][number],
+  game: GamePublicState,
+  viewerTeam: GamePublicState['players'][number]['team'],
+) => {
+  const role =
+    player.role === 'observer'
+      ? '旁观本轮 · 不能跟牌'
+      : player.playerId === game.attackerId
+        ? '本轮主攻'
+        : roleName(player.role);
+  if (player.team === 'solo') return role;
+  return `${player.team === viewerTeam ? '队友' : '对手'} · ${role}`;
+};
+
+export const resultCopy = (game: GamePublicState, viewerPlayerId: PlayerId) => {
+  const winners = game.winnerPlayerIds ?? [];
+  const losers = game.loserPlayerIds ?? [];
+  const won = winners.includes(viewerPlayerId);
+  const lost = losers.includes(viewerPlayerId);
+  const teamGame = game.players.some((player) => player.team !== 'solo');
+  const title = won
+    ? teamGame
+      ? '你所在的队伍获胜'
+      : '你赢了'
+    : lost
+      ? teamGame
+        ? '你所在的队伍落败'
+        : '你因憋王落败'
+      : winners.length
+        ? teamGame
+          ? '你所在的队伍落败'
+          : '本局惜败'
+        : '本局结束';
+  const detail =
+    game.resultReason === 'stuck-with-jokers'
+      ? lost || (!teamGame && winners.length > 0 && !won)
+        ? '本局因你触发憋王结束。'
+        : teamGame && !won
+          ? '本局因队友触发憋王结束。'
+          : '本局因对手触发憋王结束。'
+      : '本局由玩家率先出完手牌结束。';
+  return { title, detail };
+};
+
 function CardView({
   card,
   compact = false,
@@ -140,14 +211,15 @@ export function GameTable({
   const selfGame = game.players.find(
     (player) => player.playerId === view.viewerPlayerId,
   )!;
-  const opponentGame = game.players.find(
-    (player) => player.playerId !== view.viewerPlayerId,
-  );
-  const opponent = view.public.room.players.find(
-    (player) => player.playerId === opponentGame?.playerId,
-  );
   const self = view.public.room.players.find(
     (player) => player.playerId === view.viewerPlayerId,
+  );
+  const seatPositions = useMemo(
+    () => relativeSeatMap(view.public.room.players, view.viewerPlayerId),
+    [view.public.room.players, view.viewerPlayerId],
+  );
+  const otherPlayers = view.public.room.players.filter(
+    (player) => player.playerId !== view.viewerPlayerId,
   );
   const remaining = secondsRemaining(game.turnDeadline, now);
   const blocked =
@@ -215,27 +287,14 @@ export function GameTable({
         ? `轮到你${legal.has('beat-card') ? '压牌' : '出牌'}`
         : legal.has('collect')
           ? '你可随时收牌'
-          : '等待对方操作';
-
-  if (view.public.room.config.playerCount !== 2) {
-    return (
-      <section className="multiplayer-placeholder">
-        <Panel tone="felt">
-          <p className="eyebrow">安全占位</p>
-          <h1>{view.public.room.config.playerCount} 人牌桌将在任务 17 完成</h1>
-          <p>
-            当前连接与本人权威状态已安全保留，本页面不会套用二人操作或展示其他玩家手牌。
-          </p>
-          <Badge tone={connectionState === 'started' ? 'green' : 'red'} dot>
-            {connectionState === 'started' ? '实时连接' : '连接需恢复'}
-          </Badge>
-        </Panel>
-      </section>
-    );
-  }
+          : `等待${game.players.find((player) => player.playerId === game.currentActorId)?.role === 'defender' ? '防守方' : '进攻方'}操作`;
+  const result = resultCopy(game, view.viewerPlayerId);
 
   return (
-    <section className="game-table" aria-label="二人游戏牌桌">
+    <section
+      className={`game-table game-table--${view.public.room.config.playerCount}`}
+      aria-label={`${view.public.room.config.playerCount}人游戏牌桌`}
+    >
       <header className="game-hud">
         <div>
           <small>{view.public.room.name}</small>
@@ -265,17 +324,30 @@ export function GameTable({
         </p>
       </header>
 
-      <div className="opponent-zone">
-        {opponent && opponentGame && (
-          <PlayerSeat
-            name={opponent.nickname}
-            avatar={opponent.nickname.slice(0, 1)}
-            cards={opponentGame.handCount}
-            online={opponent.connection === 'online'}
-            active={game.currentActorId === opponent.playerId}
-            role={roleName(opponentGame.role)}
-          />
-        )}
+      <div className="player-ring" aria-label="其他玩家座位">
+        {otherPlayers.map((player) => {
+          const publicPlayer = game.players.find(
+            (candidate) => candidate.playerId === player.playerId,
+          );
+          if (!publicPlayer) return null;
+          const position = seatPositions.get(player.playerId) ?? 'top';
+          return (
+            <div
+              className={`table-seat table-seat--${position}`}
+              data-player-id={player.playerId}
+              key={player.playerId}
+            >
+              <PlayerSeat
+                name={player.nickname}
+                avatar={player.nickname.slice(0, 1)}
+                cards={publicPlayer.handCount}
+                online={player.connection === 'online'}
+                active={game.currentActorId === player.playerId}
+                role={playerRoleLabel(publicPlayer, game, selfGame.team)}
+              />
+            </div>
+          );
+        })}
       </div>
 
       <div className="center-table">
@@ -299,7 +371,12 @@ export function GameTable({
               <div className="table-pair" key={pair.attack.card.id}>
                 <div>
                   <CardView card={pair.attack.card} compact />
-                  <small>攻牌</small>
+                  <small>
+                    {view.public.room.players.find(
+                      (player) => player.playerId === pair.attack.playerId,
+                    )?.nickname ?? '进攻方'}
+                    ·攻
+                  </small>
                 </div>
                 <div className={!pair.defense ? 'uncovered' : ''}>
                   {pair.defense ? (
@@ -322,7 +399,8 @@ export function GameTable({
         <div className="self-summary">
           <strong>{self?.nickname ?? '本人'}</strong>
           <span>
-            {roleName(selfGame.role)} · {hand.length} 张牌
+            {playerRoleLabel(selfGame, game, selfGame.team)} · {hand.length}{' '}
+            张牌
           </span>
         </div>
         <div className="hand" aria-label="本人手牌">
@@ -403,15 +481,9 @@ export function GameTable({
         <div className="table-overlay finished" role="dialog" aria-modal="true">
           <Panel>
             <p className="eyebrow">本局结束</p>
-            <h2>
-              {game.winnerPlayerIds?.includes(view.viewerPlayerId)
-                ? '你赢了'
-                : '本局惜败'}
-            </h2>
+            <h2>{result.title}</h2>
             <p>
-              {game.resultReason === 'stuck-with-jokers'
-                ? '本局因憋王结束。'
-                : '本局由玩家率先出完手牌结束。'}
+              {result.detail}
               完整战绩与结算详情将在任务 18 提供。
             </p>
             <Button onClick={onSafeReturn}>返回安全首页</Button>

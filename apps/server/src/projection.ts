@@ -67,6 +67,24 @@ const resultReason = (
     : 'stuck-with-jokers';
 };
 
+export const projectLoserIds = (
+  authority: AuthorityState,
+): PlayerId[] | undefined => {
+  const { state } = authority;
+  if (state.phase !== 'finished') return undefined;
+  if (authority.mode === 3) {
+    const result = (state as ThreePlayerState<PlayerId> & { phase: 'finished' })
+      .result;
+    return result.outcome === 'loser' ? [result.loser] : undefined;
+  }
+  if (authority.mode === 4)
+    return [
+      ...(state as FourPlayerState<PlayerId> & { phase: 'finished' }).result
+        .losingTeam.members,
+    ];
+  return undefined;
+};
+
 const roles = (authority: AuthorityState, playerId: PlayerId) => {
   const { state } = authority;
   if (authority.mode === 2)
@@ -106,6 +124,7 @@ const projectGame = (
 ): GamePublicState => {
   const { state } = authority;
   const winners = winnerIds(authority);
+  const losers = projectLoserIds(authority);
   const reason = resultReason(authority);
   const attackPlayerId =
     authority.mode === 2
@@ -147,6 +166,7 @@ const projectGame = (
     defenderId: state.defender,
     turnDeadline,
     ...(winners ? { winnerPlayerIds: winners } : {}),
+    ...(losers ? { loserPlayerIds: losers } : {}),
     ...(reason ? { resultReason: reason } : {}),
   };
 };

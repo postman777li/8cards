@@ -41,6 +41,7 @@ export const gamePublicStateSchema = z.strictObject({
   defenderId: playerIdSchema.nullable(),
   turnDeadline: timestampSchema.nullable(),
   winnerPlayerIds: z.array(playerIdSchema).max(2).optional(),
+  loserPlayerIds: z.array(playerIdSchema).max(2).optional(),
   resultReason: z.enum(['emptied-hand', 'stuck-with-jokers']).optional(),
 });
 export const publicSnapshotSchema = z.strictObject({

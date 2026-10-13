@@ -387,5 +387,37 @@ describe('websocket lobby client', () => {
     });
     await expect(action).rejects.toMatchObject({ message: '此牌不能出' });
     expect(connection.view.public.stateVersion).toBe(1);
+
+    const remainingActions = [
+      {
+        kind: 'beat-card',
+        cardId: 'spades-K' as never,
+        targetCardId: 'spades-Q' as never,
+      },
+      { kind: 'pass' },
+      { kind: 'collect' },
+      { kind: 'exchange-trump-two' },
+    ] as const;
+    for (const [index, value] of remainingActions.entries()) {
+      const pending = connection.action(value);
+      const sent = JSON.parse(socket.sent[index + 2]!);
+      expect(sent).toMatchObject({
+        type: 'game.action',
+        actionSequence: index + 3,
+        expectedStateVersion: 1,
+        action: value,
+      });
+      socket.message({
+        type: 'response.error',
+        ...meta,
+        requestId: sent.requestId,
+        error: {
+          code: 'ILLEGAL_ACTION',
+          message: '测试拒绝',
+          retryable: false,
+        },
+      });
+      await expect(pending).rejects.toMatchObject({ message: '测试拒绝' });
+    }
   });
 });

@@ -227,6 +227,7 @@ describe('server protocol validation', () => {
       defenderId: 'p2',
       turnDeadline: null,
       winnerPlayerIds: ['p1'],
+      loserPlayerIds: ['p2'],
       resultReason: 'stuck-with-jokers',
     };
     expect(gamePublicStateSchema.parse(game).resultReason).toBe(
@@ -235,6 +236,12 @@ describe('server protocol validation', () => {
     expect(
       gamePublicStateSchema.safeParse({ ...game, resultReason: 'secret-state' })
         .success,
+    ).toBe(false);
+    expect(
+      gamePublicStateSchema.safeParse({
+        ...game,
+        loserPlayerIds: ['p1', 'p2', 'p3'],
+      }).success,
     ).toBe(false);
   });
 
