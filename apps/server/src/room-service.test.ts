@@ -190,6 +190,54 @@ describe('RoomService creation and joining', () => {
 });
 
 describe('RoomService permissions and lifecycle', () => {
+  it('validates start eligibility without persisting lifecycle or version changes', () => {
+    const store = new TrackingDetachedStore();
+    const { service } = factory(['VAL123'], store);
+    const host = service.createRoom({
+      nickname: 'h',
+      roomName: 'r',
+      config: config(),
+    });
+    expectCode(
+      () =>
+        service.validateStartRoom({
+          roomId: host.room.roomId,
+          playerId: host.playerId,
+          reconnectToken: host.reconnectToken,
+          expectedStateVersion: 0,
+        }),
+      'NOT_ENOUGH_PLAYERS',
+    );
+    const guest = service.joinRoom({
+      roomCode: host.room.code,
+      nickname: 'g',
+    });
+    service.setReady({
+      roomId: host.room.roomId,
+      playerId: guest.playerId,
+      reconnectToken: guest.reconnectToken,
+      ready: true,
+      expectedStateVersion: 1,
+    });
+    const updatesBeforeValidation = store.updates;
+    const candidate = service.validateStartRoom({
+      roomId: host.room.roomId,
+      playerId: host.playerId,
+      reconnectToken: host.reconnectToken,
+      expectedStateVersion: 2,
+    });
+    expect(candidate).toMatchObject({ stateVersion: 2 });
+    expect(candidate.players.map((player) => player.playerId)).toEqual([
+      host.playerId,
+      guest.playerId,
+    ]);
+    expect(store.updates).toBe(updatesBeforeValidation);
+    expect(service.getRoomByCode(host.room.code)).toMatchObject({
+      lifecycle: 'waiting',
+      stateVersion: 2,
+    });
+  });
+
   it('requires the host, exact capacity, and all guests ready before starting', () => {
     const { service } = factory();
     const host = service.createRoom({

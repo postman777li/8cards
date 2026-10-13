@@ -185,7 +185,7 @@ const legalActions = (
     if (state.phase === 'awaiting-defense') result.push('beat-card');
     else {
       result.push('play-card');
-      if (state.table.length > 0) result.push('pass');
+      result.push('pass');
     }
   }
   return result;

@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
+import { compareCards } from '@8cards/game-engine';
 
 import { createApp, type AppServer } from './app.js';
 
@@ -74,8 +75,18 @@ afterEach(async () => {
   servers.clear();
 });
 
-const start = async () => {
-  const server = createApp();
+const start = async (randomOverride?: () => number) => {
+  let randomState = 0x12345678;
+  const server = createApp({
+    random:
+      randomOverride ??
+      (() => {
+        randomState ^= randomState << 13;
+        randomState ^= randomState >>> 17;
+        randomState ^= randomState << 5;
+        return (randomState >>> 0) / 0x1_0000_0000;
+      }),
+  });
   servers.add(server);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -203,6 +214,143 @@ describe('HTTP and WebSocket transport', () => {
 });
 
 describe('real multi-client games', () => {
+  it('validates start eligibility before initialization and preserves state on every failure', async () => {
+    const { wsUrl } = await start();
+    const host = await connect(wsUrl);
+    await request(host, {
+      type: 'room.create',
+      ...meta('eligibility-create', 1),
+      nickname: 'host',
+      roomName: '资格检查',
+      config: {
+        playerCount: 2,
+        allowSpectators: true,
+        allowChat: true,
+        turnTimeoutSeconds: 20,
+      },
+    });
+    const initial = await host.waitFor(
+      (event) => event.type === 'state.player',
+    );
+    const roomCode = (
+      (initial.view as Record<string, unknown>).public as {
+        room: { code: string };
+      }
+    ).room.code;
+    const tooFew = await request(host, {
+      type: 'room.start',
+      ...meta('too-few', 2),
+      expectedStateVersion: 0,
+    });
+    expect((tooFew.error as { code: string }).code).toBe('ILLEGAL_ACTION');
+    expect(
+      host.events.filter((event) => event.type === 'state.player'),
+    ).toHaveLength(1);
+
+    const guest = await connect(wsUrl);
+    await request(guest, {
+      type: 'room.join',
+      ...meta('eligibility-join', 1),
+      nickname: 'guest',
+      roomCode,
+    });
+    const nonHost = await request(guest, {
+      type: 'room.start',
+      ...meta('non-host-start', 2),
+      expectedStateVersion: 1,
+    });
+    expect((nonHost.error as { code: string }).code).toBe('WRONG_ACTOR');
+    const notReady = await request(host, {
+      type: 'room.start',
+      ...meta('not-ready-start', 3),
+      expectedStateVersion: 1,
+    });
+    expect((notReady.error as { code: string }).code).toBe('ILLEGAL_ACTION');
+    expect(
+      host.events.filter(
+        (event) => event.type === 'state.player' && event.stateVersion === 1,
+      ),
+    ).toHaveLength(1);
+
+    await request(guest, {
+      type: 'room.ready',
+      ...meta('eligibility-ready', 3),
+      expectedStateVersion: 1,
+      ready: true,
+    });
+    const started = await request(host, {
+      type: 'room.start',
+      ...meta('eligibility-start', 4),
+      expectedStateVersion: 2,
+    });
+    expect(started.stateVersion).toBe(3);
+    const repeated = await request(host, {
+      type: 'room.start',
+      ...meta('repeat-start', 5),
+      expectedStateVersion: 3,
+    });
+    expect((repeated.error as { code: string }).code).toBe('ILLEGAL_ACTION');
+    expect(
+      host.events.filter(
+        (event) => event.type === 'state.player' && event.stateVersion === 3,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('leaves the room waiting when game initialization fails', async () => {
+    const { wsUrl } = await start(() => 1);
+    const host = await connect(wsUrl);
+    const guest = await connect(wsUrl);
+    await request(host, {
+      type: 'room.create',
+      ...meta('init-create', 1),
+      nickname: 'host',
+      roomName: '初始化失败',
+      config: {
+        playerCount: 2,
+        allowSpectators: true,
+        allowChat: true,
+        turnTimeoutSeconds: 20,
+      },
+    });
+    const initial = await host.waitFor(
+      (event) => event.type === 'state.player',
+    );
+    const roomCode = (
+      (initial.view as Record<string, unknown>).public as {
+        room: { code: string };
+      }
+    ).room.code;
+    await request(guest, {
+      type: 'room.join',
+      ...meta('init-join', 1),
+      nickname: 'guest',
+      roomCode,
+    });
+    await request(guest, {
+      type: 'room.ready',
+      ...meta('init-ready', 2),
+      expectedStateVersion: 1,
+      ready: true,
+    });
+    const failed = await request(host, {
+      type: 'room.start',
+      ...meta('init-start', 2),
+      expectedStateVersion: 2,
+    });
+    expect((failed.error as { code: string }).code).toBe('INTERNAL_ERROR');
+    const stillWaiting = await request(host, {
+      type: 'room.ready',
+      ...meta('init-still-waiting', 3),
+      expectedStateVersion: 2,
+      ready: true,
+    });
+    expect(stillWaiting).toMatchObject({
+      type: 'response.ok',
+      stateVersion: 3,
+    });
+  });
+
   it.each([2, 3, 4] as const)(
     'starts a %i-player game with isolated hands and correct roles',
     async (count) => {
@@ -376,5 +524,208 @@ describe('real multi-client games', () => {
       action: { kind: 'pass' },
     });
     expect((jump.error as { code: string }).code).toBe('DUPLICATE_REQUEST');
+  });
+
+  it('advertises and accepts an empty-table pass', async () => {
+    const { wsUrl } = await start();
+    const { all, startedVersion } = await setupGame(2, wsUrl);
+    const entries = await Promise.all(
+      all.map(async (client) => ({
+        client,
+        state: await client.waitFor(
+          (event) =>
+            event.type === 'state.player' &&
+            event.stateVersion === startedVersion,
+        ),
+      })),
+    );
+    const actorId = (
+      (entries[0]!.state.view as Record<string, unknown>).public as {
+        game: { currentActorId: string };
+      }
+    ).game.currentActorId;
+    const actor = entries.find(
+      ({ state }) =>
+        (state.view as { viewerPlayerId: string }).viewerPlayerId === actorId,
+    )!;
+    expect(
+      (
+        (actor.state.view as Record<string, unknown>).private as {
+          legalActionTypes: string[];
+        }
+      ).legalActionTypes,
+    ).toContain('pass');
+    const passed = await request(actor.client, {
+      type: 'game.action',
+      ...meta('empty-pass', 3),
+      expectedStateVersion: startedVersion,
+      action: { kind: 'pass' },
+    });
+    expect(passed).toMatchObject({
+      type: 'response.ok',
+      stateVersion: startedVersion + 1,
+    });
+  });
+
+  it('lets the other three-player attacker follow by cursor and rejects a four-player observer', async () => {
+    const { wsUrl } = await start();
+    const three = await setupGame(3, wsUrl);
+    const threeEntries = await Promise.all(
+      three.all.map(async (client) => ({
+        client,
+        credential: await client.waitFor(
+          (event) => event.type === 'session.established',
+        ),
+        state: await client.waitFor(
+          (event) =>
+            event.type === 'state.player' &&
+            event.stateVersion === three.startedVersion,
+        ),
+      })),
+    );
+    const publicGame = (
+      (threeEntries[0]!.state.view as Record<string, unknown>).public as Record<
+        string,
+        unknown
+      >
+    ).game as {
+      currentActorId: string;
+      defenderId: string;
+      trumpSuit: 'clubs' | 'diamonds' | 'hearts' | 'spades';
+      players: Array<{ playerId: string; role: string }>;
+    };
+    const primary = threeEntries.find(
+      (entry) => entry.credential.playerId === publicGame.currentActorId,
+    )!;
+    const defender = threeEntries.find(
+      (entry) => entry.credential.playerId === publicGame.defenderId,
+    )!;
+    const follower = threeEntries.find(
+      (entry) =>
+        entry.credential.playerId !== publicGame.currentActorId &&
+        entry.credential.playerId !== publicGame.defenderId,
+    )!;
+    const handOf = (entry: (typeof threeEntries)[number]) =>
+      (
+        (entry.state.view as Record<string, unknown>).private as {
+          hand: Array<{
+            id: string;
+            kind: 'standard' | 'joker';
+            suit?: 'clubs' | 'diamonds' | 'hearts' | 'spades';
+            rank: string;
+          }>;
+        }
+      ).hand;
+    const primaryHand = handOf(primary);
+    const defenderHand = handOf(defender);
+    const followerHand = handOf(follower);
+    const combination = primaryHand
+      .filter((card) => card.kind === 'standard')
+      .flatMap((attack) =>
+        defenderHand
+          .filter(
+            (defense) =>
+              compareCards(
+                defense as Parameters<typeof compareCards>[0],
+                attack as Parameters<typeof compareCards>[1],
+                publicGame.trumpSuit,
+              ) === 1,
+          )
+          .map((defense) => ({
+            attack,
+            defense,
+            follow: followerHand.find(
+              (card) =>
+                card.kind === 'standard' &&
+                (card.rank === attack.rank || card.rank === defense.rank),
+            ),
+          })),
+      )
+      .find((candidate) => candidate.follow);
+    expect(combination).toBeDefined();
+    const attacked = await request(primary.client, {
+      type: 'game.action',
+      ...meta('three-attack', 3),
+      expectedStateVersion: three.startedVersion,
+      action: { kind: 'play-card', cardId: combination!.attack.id },
+    });
+    const defended = await request(defender.client, {
+      type: 'game.action',
+      ...meta('three-defend', 3),
+      expectedStateVersion: attacked.stateVersion as number,
+      action: {
+        kind: 'beat-card',
+        cardId: combination!.defense.id,
+        targetCardId: combination!.attack.id,
+      },
+    });
+    const followed = await request(follower.client, {
+      type: 'game.action',
+      ...meta('three-follow', 3),
+      expectedStateVersion: defended.stateVersion as number,
+      action: { kind: 'play-card', cardId: combination!.follow!.id },
+    });
+    expect(followed).toMatchObject({
+      type: 'response.ok',
+      stateVersion: three.startedVersion + 3,
+    });
+    const followedState = await primary.client.waitFor(
+      (event) =>
+        event.type === 'state.player' &&
+        event.stateVersion === three.startedVersion + 3,
+    );
+    const table = (
+      (followedState.view as Record<string, unknown>).public as {
+        game: { table: Array<{ playerId: string; purpose: string }> };
+      }
+    ).game.table;
+    expect(
+      table
+        .filter((play) => play.purpose === 'attack')
+        .map((play) => play.playerId),
+    ).toEqual([primary.credential.playerId, follower.credential.playerId]);
+
+    const four = await setupGame(4, wsUrl);
+    const fourEntries = await Promise.all(
+      four.all.map(async (client) => ({
+        client,
+        credential: await client.waitFor(
+          (event) => event.type === 'session.established',
+        ),
+        state: await client.waitFor(
+          (event) =>
+            event.type === 'state.player' &&
+            event.stateVersion === four.startedVersion,
+        ),
+      })),
+    );
+    const fourPlayers = (
+      (fourEntries[0]!.state.view as Record<string, unknown>).public as {
+        game: { players: Array<{ playerId: string; role: string }> };
+      }
+    ).game.players;
+    const observerId = fourPlayers.find(
+      (player) => player.role === 'observer',
+    )!.playerId;
+    const observer = fourEntries.find(
+      (entry) => entry.credential.playerId === observerId,
+    )!;
+    const observerCard = handOf(observer as (typeof threeEntries)[number]).find(
+      (card) => card.kind === 'standard',
+    )!;
+    const rejected = await request(observer.client, {
+      type: 'game.action',
+      ...meta('observer-action', 3),
+      expectedStateVersion: four.startedVersion,
+      action: { kind: 'play-card', cardId: observerCard.id },
+    });
+    expect((rejected.error as { code: string }).code).toBe('WRONG_ACTOR');
+    expect(
+      observer.client.events.filter(
+        (event) =>
+          event.type === 'state.player' &&
+          (event.stateVersion as number) > four.startedVersion,
+      ),
+    ).toHaveLength(0);
   });
 });

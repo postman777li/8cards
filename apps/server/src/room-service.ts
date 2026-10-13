@@ -299,21 +299,27 @@ export class RoomService {
     expectedStateVersion: number;
   }): StartedRoom {
     const { room, player } = this.#authenticate(input);
-    this.#waiting(room);
-    this.#version(room, input.expectedStateVersion);
-    if (!player.isHost)
-      throw new RoomServiceError('NOT_HOST', '只有房主可以开始');
-    if (room.players.length !== room.config.playerCount)
-      throw new RoomServiceError('NOT_ENOUGH_PLAYERS', '房间人数不足');
-    if (
-      room.players.some(
-        (candidate) => !candidate.isHost && candidate.readiness !== 'ready',
-      )
-    )
-      throw new RoomServiceError('PLAYERS_NOT_READY', '仍有玩家未准备');
+    this.#assertStartable(room, player, input.expectedStateVersion);
     room.lifecycle = 'started';
     room.stateVersion += 1;
     this.#persist(room);
+    const snapshot = this.#snapshot(room);
+    return {
+      roomId: snapshot.roomId,
+      config: snapshot.config,
+      players: snapshot.players,
+      stateVersion: snapshot.stateVersion,
+    };
+  }
+
+  validateStartRoom(input: {
+    roomId: RoomId;
+    playerId: PlayerId;
+    reconnectToken: string;
+    expectedStateVersion: number;
+  }): StartedRoom {
+    const { room, player } = this.#authenticate(input);
+    this.#assertStartable(room, player, input.expectedStateVersion);
     const snapshot = this.#snapshot(room);
     return {
       roomId: snapshot.roomId,
@@ -400,6 +406,24 @@ export class RoomService {
   #waiting(room: StoredRoom) {
     if (room.lifecycle !== 'waiting')
       throw new RoomServiceError('ROOM_STARTED', '房间已经开始');
+  }
+  #assertStartable(
+    room: StoredRoom,
+    player: StoredPlayer,
+    expectedStateVersion: number,
+  ) {
+    this.#waiting(room);
+    this.#version(room, expectedStateVersion);
+    if (!player.isHost)
+      throw new RoomServiceError('NOT_HOST', '只有房主可以开始');
+    if (room.players.length !== room.config.playerCount)
+      throw new RoomServiceError('NOT_ENOUGH_PLAYERS', '房间人数不足');
+    if (
+      room.players.some(
+        (candidate) => !candidate.isHost && candidate.readiness !== 'ready',
+      )
+    )
+      throw new RoomServiceError('PLAYERS_NOT_READY', '仍有玩家未准备');
   }
   #version(room: StoredRoom, expected: number) {
     if (room.stateVersion !== expected)

@@ -364,9 +364,11 @@ export class RealtimeService {
       };
     }
     if (event.type === 'room.start') {
-      if (runtime.authority)
-        throw new RoomServiceError('ROOM_STARTED', '游戏已经创建');
-      const players = [...runtime.snapshot.players]
+      const candidate = this.#roomService.validateStartRoom({
+        ...identity,
+        expectedStateVersion: event.expectedStateVersion,
+      });
+      const players = [...candidate.players]
         .sort((a, b) => a.seat - b.seat)
         .map((player) => player.playerId);
       const deal = createInitialDeal(players, this.#random);
