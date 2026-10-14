@@ -61,6 +61,25 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
     const host = await newPlayer(browser, '房主甲');
     contexts.push(host.context);
     await expect(host.page.getByText('YD八张')).toBeVisible();
+    const avatarFits = await host.page
+      .locator('.avatar-options img')
+      .evaluateAll((images) =>
+        images.map((image) => {
+          const element = image as HTMLImageElement;
+          const parent = element.parentElement!;
+          const sourceRatio = element.naturalWidth / element.naturalHeight;
+          const renderedRatio = element.clientWidth / element.clientHeight;
+          return {
+            fullyContained:
+              element.clientWidth <= parent.clientWidth &&
+              element.clientHeight <= parent.clientHeight,
+            preservesRatio: Math.abs(sourceRatio - renderedRatio) < 0.02,
+          };
+        }),
+      );
+    expect(avatarFits).toHaveLength(9);
+    expect(avatarFits.every(({ fullyContained }) => fullyContained)).toBe(true);
+    expect(avatarFits.every(({ preservesRatio }) => preservesRatio)).toBe(true);
     await host.page.screenshot({
       path: `${evidenceRoot}/screenshots/desktop-home-1440x900.png`,
       fullPage: true,
