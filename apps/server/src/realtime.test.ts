@@ -195,7 +195,7 @@ const setupGame = async (count: 2 | 3 | 4, wsUrl: string) => {
 class FailOnceHistoryStore implements HistoryStore {
   readonly inner = new SqliteHistoryStore(':memory:');
   attempts = 0;
-  saveGame(game: PersistedGame) {
+  async saveGame(game: PersistedGame) {
     this.attempts += 1;
     if (this.attempts === 1) throw new Error('injected write failure');
     return this.inner.saveGame(game);
@@ -206,8 +206,11 @@ class FailOnceHistoryStore implements HistoryStore {
   ) {
     return this.inner.getVisitorHistory(visitorId, limit);
   }
+  ping() {
+    return this.inner.ping();
+  }
   close() {
-    this.inner.close();
+    return this.inner.close();
   }
 }
 
@@ -361,11 +364,13 @@ describe('real multi-client games', () => {
       ).toBeGreaterThan(0);
       const first = entries[0]!;
       expect(
-        historyStore.getVisitorHistory(
-          first.credential.visitorId as Parameters<
-            HistoryStore['getVisitorHistory']
-          >[0],
-          20,
+        (
+          await historyStore.getVisitorHistory(
+            first.credential.visitorId as Parameters<
+              HistoryStore['getVisitorHistory']
+            >[0],
+            20,
+          )
         ).stats.games,
       ).toBe(1);
     },

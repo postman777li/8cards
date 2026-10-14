@@ -1,0 +1,16 @@
+.git
+.codegraph
+.env
+.env.*
+!.env.example
+node_modules
+**/dist
+coverage
+data
+test-results
+playwright-report
+TIMEOFF.md
+*.log
+*.sqlite
+*.sqlite3
+八张规则.docx

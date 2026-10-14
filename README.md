@@ -4,7 +4,7 @@
 
 GitHub 仓库：https://github.com/postman777li/8cards
 
-项目已建立工程基础结构，尚未开始游戏业务功能开发。任何开发窗口开始工作前，都必须先阅读 [AGENTS.md](AGENTS.md) 和 [docs/project-status.md](docs/project-status.md)。
+项目已完成二至四人规则、实时房间、断线恢复、聊天、观战、战绩和全系统测试，正在执行部署与正式上线。任何开发窗口开始工作前，都必须先阅读 [AGENTS.md](AGENTS.md) 和 [docs/project-status.md](docs/project-status.md)。
 
 ## 文档导航
 
@@ -16,11 +16,12 @@ GitHub 仓库：https://github.com/postman777li/8cards
 - [项目状态](docs/project-status.md)
 - [任务清单](docs/TODO.md)
 - [多窗口工作方式](docs/workflow.md)
+- [部署运维手册](docs/operations.md)
 - 原始规则来源：`八张规则.docx`
 
 ## 当前目标
 
-先冻结规则和第一版产品范围，再创建 GitHub 仓库、交互原型和工程代码。未经项目总控确认，不提前进入功能开发。
+先通过 Render + Neon 新加坡免费环境完成公网预发布验收，稳定后迁移到腾讯云中国大陆正式生产。当前架构只允许一个应用实例；应用重启会丢失进行中房间，已完成历史由 PostgreSQL 保留。
 
 ## 本地开发
 
@@ -42,6 +43,8 @@ pnpm format:check # 检查代码格式
 ```
 
 网页开发地址默认为 `http://localhost:5173`，服务端健康检查默认为 `http://localhost:3001/health`。
+
+生产环境变量说明见 [.env.example](.env.example)，操作、备份、恢复、发布和回滚步骤见 [docs/operations.md](docs/operations.md)。真实密码和连接串不得写入本地文档、Git、日志或聊天。
 
 ## UI 原型预览
 

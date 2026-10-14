@@ -3,7 +3,7 @@ import type { GameRecord, VisitorId } from '@8cards/shared';
 import { SqliteHistoryStore } from './history-store.js';
 
 describe('SQLite history store', () => {
-  it('survives a database reopen and limits recent games to the newest 20', () => {
+  it('survives a database reopen and limits recent games to the newest 20', async () => {
     const directory = mkdtempSync(join(tmpdir(), '8cards-history-'));
     const filename = join(directory, 'history.sqlite');
     const visitorId = 'persistent-visitor' as VisitorId;
@@ -34,15 +34,15 @@ describe('SQLite history store', () => {
             },
           ],
         };
-        first.saveGame({
+        await first.saveGame({
           record,
           visitorByPlayer: { 'persistent-player': visitorId },
         });
       }
-      first.close();
+      await first.close();
 
       const reopened = new SqliteHistoryStore(filename);
-      const history = reopened.getVisitorHistory(visitorId);
+      const history = await reopened.getVisitorHistory(visitorId);
       expect(history.stats).toEqual({
         games: 21,
         wins: 21,
@@ -52,13 +52,13 @@ describe('SQLite history store', () => {
       expect(history.recent).toHaveLength(20);
       expect(history.recent[0]?.gameId).toBe('persistent-game-20');
       expect(history.recent.at(-1)?.gameId).toBe('persistent-game-1');
-      reopened.close();
+      await reopened.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   });
 
-  it('atomically deduplicates a game and derives visitor statistics', () => {
+  it('atomically deduplicates a game and derives visitor statistics', async () => {
     const store = new SqliteHistoryStore(':memory:');
     const record: GameRecord = {
       gameId: 'game-1',
@@ -96,22 +96,26 @@ describe('SQLite history store', () => {
       p2: 'v2' as VisitorId,
       p3: 'v3' as VisitorId,
     };
-    expect(store.saveGame({ record, visitorByPlayer: visitors })).toBe(
-      'inserted',
-    );
-    expect(store.saveGame({ record, visitorByPlayer: visitors })).toBe(
-      'existing',
-    );
-    expect(store.getVisitorHistory('v1' as VisitorId)).toMatchObject({
+    await expect(
+      store.saveGame({ record, visitorByPlayer: visitors }),
+    ).resolves.toBe('inserted');
+    await expect(
+      store.saveGame({ record, visitorByPlayer: visitors }),
+    ).resolves.toBe('existing');
+    await expect(
+      store.getVisitorHistory('v1' as VisitorId),
+    ).resolves.toMatchObject({
       stats: { games: 1, wins: 0, losses: 1, unresolved: 0 },
     });
-    expect(store.getVisitorHistory('v2' as VisitorId)).toMatchObject({
+    await expect(
+      store.getVisitorHistory('v2' as VisitorId),
+    ).resolves.toMatchObject({
       stats: { games: 1, wins: 0, losses: 0, unresolved: 1 },
     });
-    store.close();
+    await store.close();
   });
 
-  it('stores an explicit two-player loss instead of an unresolved result', () => {
+  it('stores an explicit two-player loss instead of an unresolved result', async () => {
     const store = new SqliteHistoryStore(':memory:');
     const record: GameRecord = {
       gameId: 'game-2',
@@ -137,13 +141,14 @@ describe('SQLite history store', () => {
         },
       ],
     };
-    store.saveGame({
+    await store.saveGame({
       record,
       visitorByPlayer: { p1: 'v1' as VisitorId, p2: 'v2' as VisitorId },
     });
-    expect(store.getVisitorHistory('v1' as VisitorId).stats.losses).toBe(1);
-    expect(store.getVisitorHistory('v1' as VisitorId).stats.unresolved).toBe(0);
-    store.close();
+    const history = await store.getVisitorHistory('v1' as VisitorId);
+    expect(history.stats.losses).toBe(1);
+    expect(history.stats.unresolved).toBe(0);
+    await store.close();
   });
 });
 import { mkdtempSync, rmSync } from 'node:fs';

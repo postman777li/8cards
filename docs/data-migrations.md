@@ -1,5 +1,11 @@
 # 数据迁移边界
 
-任务 18 首次引入 `HistoryStore`。开发适配器使用 SQLite，启动时以幂等 DDL 创建 `games` 与 `game_visitors`；`game_id` 是对局幂等键，参与者关联与对局主记录在同一事务提交。
+任务 18 首次引入 `HistoryStore`。开发适配器使用 SQLite；`game_id` 是对局幂等键，参与者关联与对局主记录在同一事务提交。
 
-未来 PostgreSQL 迁移时保持 `HistoryStore.saveGame` 和 `getVisitorHistory` 领域契约不变，仅替换连接、占位符、DDL 和事务实现。迁移不得把实时连接对象、房间权威状态、手牌、牌墩、随机源或重连令牌写入历史库。正式部署前需把当前启动 DDL 转为带版本号的迁移文件，并增加备份、恢复和并发写入验收；这些部署工作属于任务 20。
+任务 20 已将存储契约升级为异步，并增加 `SqliteHistoryStore` 与 `PostgresHistoryStore` 两个适配器。存在 `DATABASE_URL` 时使用 PostgreSQL，否则继续使用本地 SQLite。SQL 方言分别位于 `apps/server/migrations/001_history.postgres.sql` 和 `001_history.sqlite.sql`，业务实时层不包含 SQL。
+
+两个适配器都维护 `schema_migrations`。版本 1 建立 `games`、`game_visitors` 和访客查询索引；SQLite 旧库没有迁移记录时通过 `IF NOT EXISTS` 安全接管，PostgreSQL 使用事务和 advisory lock 保证多个启动者不会重复迁移。PostgreSQL 保存使用 `ON CONFLICT DO NOTHING` 和同事务参与者写入，保持 `game_id` 幂等。
+
+迁移不得保存实时连接对象、房间权威状态、手牌、牌墩、随机源、聊天或重连令牌。应用重启会丢失进行中房间，已完成历史由 PostgreSQL 保留。
+
+新增迁移只能追加更高编号，已部署迁移不得原地修改。生产迁移前先用 `scripts/backup-postgres.sh` 生成逻辑备份，并按 `docs/operations.md` 恢复到空白测试库演练。真 PostgreSQL 并发测试由 `POSTGRES_TEST_DATABASE_URL` 显式启用，变量必须指向名称包含 `8cards_test` 的隔离数据库。

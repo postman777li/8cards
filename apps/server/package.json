@@ -12,12 +12,14 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0"
   },
   "dependencies": {
     "@8cards/game-engine": "workspace:*",
     "@8cards/shared": "workspace:*",
+    "pg": "^8.23.1",
     "ws": "^8.18.3"
   }
 }

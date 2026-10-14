@@ -78,6 +78,7 @@ interface ConnectionState {
   bySequence: Map<number, CachedRequest>;
   sequenceByRequestId: Map<RequestId, number>;
   chatSentAt: number[];
+  processing: Promise<void>;
 }
 interface SpectatorRecord {
   spectatorId: SpectatorId;
@@ -99,6 +100,7 @@ interface RealtimeRoom {
   chatVersion: number;
   startedAt?: string;
   settled: boolean;
+  settling: boolean;
   visitorByPlayer: Map<PlayerId, VisitorId>;
 }
 
@@ -113,6 +115,7 @@ export interface RealtimeOptions {
   random?: () => number;
   clock?: RealtimeClock;
   historyStore?: HistoryStore;
+  trustedOrigins?: ReadonlySet<string>;
 }
 
 const systemClock: RealtimeClock = {
@@ -170,6 +173,7 @@ export class RealtimeService {
   readonly #random: () => number;
   readonly #clock: RealtimeClock;
   readonly #history: HistoryStore;
+  readonly #trustedOrigins: ReadonlySet<string> | undefined;
   readonly #connections = new Map<WebSocket, ConnectionState>();
   readonly #rooms = new Map<RoomId, RealtimeRoom>();
   readonly #currentSockets = new Map<string, WebSocket>();
@@ -180,6 +184,7 @@ export class RealtimeService {
     this.#random = options.random ?? secureRandom;
     this.#clock = options.clock ?? systemClock;
     this.#history = options.historyStore ?? new SqliteHistoryStore();
+    this.#trustedOrigins = options.trustedOrigins;
     this.webSocketServer = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_MESSAGE_BYTES,
@@ -199,6 +204,15 @@ export class RealtimeService {
       socket.destroy();
       return;
     }
+    const origin = request.headers.origin;
+    if (
+      this.#trustedOrigins &&
+      (!origin || !this.#trustedOrigins.has(origin))
+    ) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) =>
       this.webSocketServer.emit('connection', webSocket, request),
     );
@@ -211,7 +225,7 @@ export class RealtimeService {
     await new Promise<void>((resolve) =>
       this.webSocketServer.close(() => resolve()),
     );
-    this.#history.close?.();
+    await this.#history.close();
   }
 
   #connect(socket: WebSocket) {
@@ -220,13 +234,18 @@ export class RealtimeService {
       bySequence: new Map(),
       sequenceByRequestId: new Map(),
       chatSentAt: [],
+      processing: Promise.resolve(),
     });
     socket.on('message', (data, isBinary) => {
       if (isBinary) {
         socket.close(1003, 'text messages only');
         return;
       }
-      this.#receive(socket, data.toString());
+      const state = this.#connections.get(socket);
+      if (!state) return;
+      state.processing = state.processing
+        .then(() => this.#receive(socket, data.toString()))
+        .catch(() => undefined);
     });
     socket.on('error', () => undefined);
     socket.on('close', () => {
@@ -268,7 +287,7 @@ export class RealtimeService {
     });
   }
 
-  #receive(socket: WebSocket, text: string) {
+  async #receive(socket: WebSocket, text: string) {
     let raw: unknown;
     try {
       raw = JSON.parse(text);
@@ -298,10 +317,10 @@ export class RealtimeService {
       );
       return;
     }
-    this.#process(socket, parsed.data, canonicalize(parsed.data));
+    await this.#process(socket, parsed.data, canonicalize(parsed.data));
   }
 
-  #process(socket: WebSocket, event: ClientEvent, canonical: string) {
+  async #process(socket: WebSocket, event: ClientEvent, canonical: string) {
     const connection = this.#connections.get(socket)!;
     const cachedSequence = connection.sequenceByRequestId.get(event.requestId);
     if (cachedSequence !== undefined) {
@@ -337,7 +356,7 @@ export class RealtimeService {
     let spectatorCredential: SpectatorIdentity | undefined;
     let changedRoom: RealtimeRoom | undefined;
     try {
-      const result = this.#execute(socket, connection, event);
+      const result = await this.#execute(socket, connection, event);
       response = {
         type: 'response.ok',
         protocolVersion: PROTOCOL_VERSION,
@@ -423,7 +442,11 @@ export class RealtimeService {
       );
   }
 
-  #execute(socket: WebSocket, connection: ConnectionState, event: ClientEvent) {
+  async #execute(
+    socket: WebSocket,
+    connection: ConnectionState,
+    event: ClientEvent,
+  ) {
     if (event.type === 'session.resume') {
       if (connection.identity || event.actionSequence !== 1)
         throw new RoomServiceError(
@@ -560,6 +583,7 @@ export class RealtimeService {
         chat: [],
         chatVersion: 0,
         settled: false,
+        settling: false,
         visitorByPlayer: new Map(),
       };
       runtime.snapshot = session.room;
@@ -641,7 +665,10 @@ export class RealtimeService {
     }
     if (event.type === 'history.get') {
       const finished = runtime.authority?.state.phase === 'finished';
-      const history = this.#history.getVisitorHistory(identity.visitorId, 20);
+      const history = await this.#history.getVisitorHistory(
+        identity.visitorId,
+        20,
+      );
       this.#send(socket, {
         type: 'history.result',
         protocolVersion: PROTOCOL_VERSION,
@@ -654,7 +681,7 @@ export class RealtimeService {
             }
           : {}),
       });
-      if (finished && !runtime.settled) this.#settleIfFinished(runtime);
+      if (finished && !runtime.settled) await this.#settleIfFinished(runtime);
       return { stateVersion: runtime.stateVersion };
     }
     if (event.type === 'spectate.leave') {
@@ -758,7 +785,7 @@ export class RealtimeService {
       if (consumesTurn) this.#scheduleTurn(runtime);
       else if (runtime.authority.state.phase === 'finished')
         this.#cancelTimer(runtime);
-      this.#settleIfFinished(runtime);
+      await this.#settleIfFinished(runtime);
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
     throw new RoomServiceError('INVALID_INPUT', '不支持的操作');
@@ -896,13 +923,15 @@ export class RealtimeService {
       : `${identity.roomId}:spectator:${identity.spectatorId}`;
   }
 
-  #settleIfFinished(room: RealtimeRoom) {
+  async #settleIfFinished(room: RealtimeRoom) {
     if (
       room.settled ||
+      room.settling ||
       !room.authority ||
       room.authority.state.phase !== 'finished'
     )
       return;
+    room.settling = true;
     const game = projectSpectatorView(
       room.snapshot,
       room.stateVersion,
@@ -937,13 +966,15 @@ export class RealtimeService {
       }),
     };
     try {
-      this.#history.saveGame({
+      await this.#history.saveGame({
         record,
         visitorByPlayer: Object.fromEntries(room.visitorByPlayer),
       });
       room.settled = true;
     } catch {
       // The finished authority remains intact; a later duplicate finish/query may retry persistence.
+    } finally {
+      room.settling = false;
     }
   }
 
@@ -975,7 +1006,7 @@ export class RealtimeService {
         );
         room.stateVersion += 1;
         this.#scheduleTurn(room);
-        this.#settleIfFinished(room);
+        void this.#settleIfFinished(room);
         this.#broadcast(room);
       } catch {
         this.#cancelTimer(room);
