@@ -431,15 +431,17 @@ export default function App() {
           <div className="hero">
             <p className="eyebrow">河南永城 · 好友局</p>
             <h1>
-              一桌老友，
+              牌能补到八张，
               <br />
-              <em>八张见真章。</em>
+              <em>心补不上空荡</em>
             </h1>
-            <p>无需注册，输入昵称就能邀请远方朋友，重新围坐一桌。</p>
+            <p>
+              人不在一桌，牌照样能续上。喊上熟人，开一局就知道谁还记得规矩。
+            </p>
             <div className="chips">
-              <span>2–4 人私密房</span>
-              <span>20 秒回合</span>
-              <span>断线凭证保存</span>
+              <span>两到四人</span>
+              <span>熟人房间</span>
+              <span>掉线可续</span>
             </div>
           </div>
           <Panel className="entry-card">

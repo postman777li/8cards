@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   Card,
   CardId,
@@ -212,6 +212,14 @@ export function GameTable({
   >([]);
   const [history, setHistory] =
     useState<import('./realtime-client.js').VisitorHistory>();
+  const [motionCue, setMotionCue] = useState<{
+    kind: 'draw' | 'play' | 'collect';
+    version: number;
+  }>();
+  const previousMotion = useRef({
+    stockCount: game.stockCount,
+    tableCount: game.table.length,
+  });
   const hand = useMemo(() => sortHand(view.private.hand), [view.private.hand]);
   const pairs = useMemo(() => pairTable(game.table), [game.table]);
   const legal = useMemo(
@@ -272,6 +280,18 @@ export function GameTable({
       offHistory();
     };
   }, [connection, game.phase]);
+  useEffect(() => {
+    const previous = previousMotion.current;
+    let kind: 'draw' | 'play' | 'collect' | undefined;
+    if (game.table.length === 0 && previous.tableCount > 0) kind = 'collect';
+    else if (game.table.length > previous.tableCount) kind = 'play';
+    else if (game.stockCount < previous.stockCount) kind = 'draw';
+    previousMotion.current = {
+      stockCount: game.stockCount,
+      tableCount: game.table.length,
+    };
+    if (kind) setMotionCue({ kind, version: view.public.stateVersion });
+  }, [game.stockCount, game.table.length, view.public.stateVersion]);
 
   const submit = async (action: GameAction) => {
     if (blocked || !connection) return;
@@ -440,6 +460,17 @@ export function GameTable({
       </aside>
 
       <div className="center-table">
+        {motionCue ? (
+          <div
+            className={`table-motion table-motion--${motionCue.kind}`}
+            key={`${motionCue.kind}-${motionCue.version}`}
+            aria-hidden="true"
+          >
+            <i />
+            <i />
+            <i />
+          </div>
+        ) : null}
         <div
           className={`turn-clock ${remaining !== null && remaining <= 5 ? 'urgent' : ''}`}
         >
@@ -481,7 +512,9 @@ export function GameTable({
             <p className="empty-table">等待本轮首张攻牌</p>
           )}
         </div>
-        <p className="turn-status">{statusText}</p>
+        <p className="turn-status" key={`${game.currentActorId}-${game.phase}`}>
+          {statusText}
+        </p>
       </div>
 
       <div className="self-zone">

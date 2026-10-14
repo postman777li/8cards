@@ -61,6 +61,10 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
     const host = await newPlayer(browser, '房主甲');
     contexts.push(host.context);
     await expect(host.page.getByText('YD八张')).toBeVisible();
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-home-1440x900.png`,
+      fullPage: true,
+    });
     await host.page.getByRole('button', { name: '使用头像 1' }).click();
     const code = await createRoom(host.page, 2);
     const share = host.page.locator('.share > span');
@@ -95,6 +99,12 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
     await host.page.getByRole('button', { name: '开始游戏' }).click();
     await expect(host.page.getByLabel('2人游戏牌桌')).toBeVisible();
     await expect(guest.page.getByLabel('2人游戏牌桌')).toBeVisible();
+    const actor = (await host.page.getByText(/^轮到你/).isVisible())
+      ? host.page
+      : guest.page;
+    await actor.getByLabel('本人手牌').getByRole('button').first().click();
+    await actor.getByRole('button', { name: /^(出牌|压牌)$/ }).click();
+    await expect(actor.locator('.table-motion--play')).toBeAttached();
     await host.page.getByRole('button', { name: /^聊天/ }).click();
     await host.page
       .getByLabel('聊天内容')
