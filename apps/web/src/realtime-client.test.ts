@@ -250,6 +250,7 @@ describe('websocket lobby client', () => {
         roomId: 'room-1' as never,
         playerId: 'p1' as never,
         reconnectToken: 'a'.repeat(32),
+        visitorId: 'visitor-1' as never,
       },
       { url: 'ws://test/ws', createSocket: () => socket as never },
     );
@@ -260,6 +261,7 @@ describe('websocket lobby client', () => {
       actionSequence: 1,
       reconnectToken: 'a'.repeat(32),
     });
+    expect(request).not.toHaveProperty('visitorId');
     socket.message({
       type: 'response.ok',
       ...meta,

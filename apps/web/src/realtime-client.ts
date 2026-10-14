@@ -438,7 +438,9 @@ export function resumeLobby(session: StoredSession, options: Options) {
       protocolVersion: PROTOCOL_VERSION,
       requestId: requestId(),
       actionSequence: 1,
-      ...session,
+      roomId: session.roomId,
+      playerId: session.playerId,
+      reconnectToken: session.reconnectToken,
     }),
     options,
   );

@@ -214,3 +214,28 @@ test('浏览器在延迟和抖动下保持真实 WebSocket 牌桌', async ({ bro
     await closeAll(contexts);
   }
 });
+
+test('玩家刷新页面后恢复正在进行的对局', async ({ browser }) => {
+  const contexts: BrowserContext[] = [];
+  try {
+    const host = await newPlayer(browser, '刷新房主');
+    const guest = await newPlayer(browser, '刷新玩家', {
+      width: 844,
+      height: 390,
+    });
+    contexts.push(host.context, guest.context);
+
+    const code = await createRoom(host.page, 2);
+    await joinRoom(guest.page, code);
+    await guest.page.getByRole('button', { name: '准备', exact: true }).click();
+    await host.page.getByRole('button', { name: '开始游戏' }).click();
+    await expect(guest.page.getByLabel('2人游戏牌桌')).toBeVisible();
+
+    await guest.page.reload();
+
+    await expect(guest.page.getByLabel('2人游戏牌桌')).toBeVisible();
+    await expect(guest.page.getByText('正在恢复对局…')).not.toBeVisible();
+  } finally {
+    await closeAll(contexts);
+  }
+});
