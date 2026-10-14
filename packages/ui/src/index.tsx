@@ -73,7 +73,7 @@ export function Badge({
 
 export interface PlayerSeatProps extends HTMLAttributes<HTMLDivElement> {
   name: string;
-  avatar: string;
+  avatar: ReactNode;
   cards?: number;
   status?: string;
   role?: string;

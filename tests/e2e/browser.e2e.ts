@@ -60,6 +60,8 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
   try {
     const host = await newPlayer(browser, '房主甲');
     contexts.push(host.context);
+    await expect(host.page.getByText('YD八张')).toBeVisible();
+    await host.page.getByRole('button', { name: '使用头像 1' }).click();
     const code = await createRoom(host.page, 2);
     const share = host.page.locator('.share > span');
     await expect(share).toContainText(`?room=${code}`);
@@ -78,6 +80,12 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
     await guest.page.getByPlaceholder('例如：麦田守望者').fill('玩家乙');
     await guest.page.getByRole('button', { name: '加入', exact: true }).click();
     await guest.page.getByRole('button', { name: '准备', exact: true }).click();
+    await expect(
+      guest.page
+        .locator('.ui-seat')
+        .filter({ hasText: '房主甲' })
+        .locator('img'),
+    ).toHaveAttribute('src', '/avatars/avatar-1.jpg');
     await expect(guest.page.getByText('已准备，等待房主开始')).toBeVisible();
     await guest.page.screenshot({
       path: `${evidenceRoot}/screenshots/mobile-landscape-waiting-844x390.png`,

@@ -6,12 +6,14 @@ import {
 } from 'node:crypto';
 
 import {
+  avatarIdSchema,
   nicknameSchema,
   playerIdSchema,
   roomCodeSchema,
   roomConfigSchema,
   roomIdSchema,
   roomNameSchema,
+  type AvatarId,
   type ErrorCode,
   type PlayerId,
   type PublicPlayer,
@@ -189,13 +191,20 @@ export class RoomService {
 
   createRoom(input: {
     nickname: string;
+    avatarId?: AvatarId | undefined;
     roomName: string;
     config: RoomConfig;
   }): PlayerSession {
     const nickname = nicknameSchema.safeParse(input.nickname);
+    const avatarId = avatarIdSchema.safeParse(input.avatarId ?? 'default');
     const name = roomNameSchema.safeParse(input.roomName);
     const config = roomConfigSchema.safeParse(input.config);
-    if (!nickname.success || !name.success || !config.success) {
+    if (
+      !nickname.success ||
+      !avatarId.success ||
+      !name.success ||
+      !config.success
+    ) {
       return invalid('房间创建参数无效');
     }
     const roomId = roomIdSchema.parse(this.#roomId());
@@ -217,6 +226,7 @@ export class RoomService {
             identity: 'player',
             playerId,
             nickname: nickname.data,
+            avatarId: avatarId.data,
             seat: 0,
             isHost: true,
             connection: 'online',
@@ -235,10 +245,16 @@ export class RoomService {
     );
   }
 
-  joinRoom(input: { roomCode: string; nickname: string }): PlayerSession {
+  joinRoom(input: {
+    roomCode: string;
+    nickname: string;
+    avatarId?: AvatarId | undefined;
+  }): PlayerSession {
     const code = roomCodeSchema.safeParse(input.roomCode);
     const nickname = nicknameSchema.safeParse(input.nickname);
-    if (!code.success || !nickname.success) return invalid('加入房间参数无效');
+    const avatarId = avatarIdSchema.safeParse(input.avatarId ?? 'default');
+    if (!code.success || !nickname.success || !avatarId.success)
+      return invalid('加入房间参数无效');
     const room = this.#store.getByCode(code.data);
     if (!room) throw new RoomServiceError('ROOM_NOT_FOUND', '房间不存在');
     if (room.lifecycle === 'started')
@@ -257,6 +273,7 @@ export class RoomService {
       identity: 'player',
       playerId,
       nickname: nickname.data,
+      avatarId: avatarId.data,
       seat,
       isHost: false,
       connection: 'online',
@@ -453,6 +470,7 @@ export class RoomService {
         identity: player.identity,
         playerId: player.playerId,
         nickname: player.nickname,
+        avatarId: player.avatarId,
         seat: player.seat,
         isHost: player.isHost,
         connection: player.connection,

@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Badge, Button, Panel, PlayerSeat, PlayingCard } from '@8cards/ui';
 import type { Card, ChatMessage, SpectatorView } from '@8cards/shared';
 import type { SpectatorConnection, VisitorHistory } from './realtime-client.js';
+import { avatarImage } from './avatars.js';
 
 const face = (card: Card) =>
   card.kind === 'joker'
@@ -75,7 +76,13 @@ export function SpectatorTable({
               <PlayerSeat
                 key={player.playerId}
                 name={player.nickname}
-                avatar={player.nickname.slice(0, 1)}
+                avatar={
+                  avatarImage(player.avatarId) ? (
+                    <img src={avatarImage(player.avatarId)!} alt="" />
+                  ) : (
+                    player.nickname.slice(0, 1)
+                  )
+                }
                 online={player.connection === 'online'}
                 {...(count === undefined ? {} : { cards: count })}
                 {...(game?.currentActorId === player.playerId

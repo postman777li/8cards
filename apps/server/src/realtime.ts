@@ -6,6 +6,7 @@ import {
   serverEventSchema,
   requestIdSchema,
   safeParseClientEvent,
+  type AvatarId,
   type ClientEvent,
   type ErrorCode,
   type IndividualServerEvent,
@@ -83,6 +84,7 @@ interface ConnectionState {
 interface SpectatorRecord {
   spectatorId: SpectatorId;
   nickname: string;
+  avatarId: AvatarId;
   tokenDigest: string;
   visitorId: VisitorId;
   connection: 'online' | 'disconnected';
@@ -502,6 +504,7 @@ export class RealtimeService {
       const record: SpectatorRecord = {
         spectatorId,
         nickname: event.nickname,
+        avatarId: event.avatarId ?? 'default',
         tokenDigest: this.#digest(reconnectToken),
         visitorId: event.visitorId,
         connection: 'online',
@@ -893,6 +896,7 @@ export class RealtimeService {
         identity: 'spectator' as const,
         spectatorId: item.spectatorId,
         nickname: item.nickname,
+        avatarId: item.avatarId,
         connection: item.connection,
       })),
     };

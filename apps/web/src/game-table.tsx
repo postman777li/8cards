@@ -9,6 +9,7 @@ import type {
 } from '@8cards/shared';
 import { Badge, Button, Panel, PlayerSeat, PlayingCard } from '@8cards/ui';
 import type { LobbyConnection } from './realtime-client.js';
+import { avatarImage } from './avatars.js';
 
 export type TableConnectionState =
   | 'connecting'
@@ -365,7 +366,13 @@ export function GameTable({
             >
               <PlayerSeat
                 name={player.nickname}
-                avatar={player.nickname.slice(0, 1)}
+                avatar={
+                  avatarImage(player.avatarId) ? (
+                    <img src={avatarImage(player.avatarId)!} alt="" />
+                  ) : (
+                    player.nickname.slice(0, 1)
+                  )
+                }
                 cards={publicPlayer.handCount}
                 online={player.connection === 'online'}
                 active={game.currentActorId === player.playerId}

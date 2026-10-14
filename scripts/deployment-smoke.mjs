@@ -19,7 +19,7 @@ for (const [path, expected] of [
 }
 
 const page = await fetch(baseUrl);
-if (!page.ok || !(await page.text()).includes('永城八张'))
+if (!page.ok || !(await page.text()).includes('YD八张'))
   throw new Error(`frontend failed with HTTP ${page.status}`);
 
 const wsUrl = new URL('/ws', baseUrl);

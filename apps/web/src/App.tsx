@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Badge, Button, Panel, PlayerSeat } from '@8cards/ui';
+import type { AvatarId } from '@8cards/shared';
 import {
   NICKNAME_STORAGE_KEY,
   buildShareUrl,
@@ -35,6 +36,12 @@ import {
   leaveSpectatorRoom,
   SPECTATOR_SESSION_STORAGE_KEY,
 } from './spectator-session.js';
+import {
+  AVATAR_STORAGE_KEY,
+  avatarImage,
+  avatarOptions,
+  loadAvatarId,
+} from './avatars.js';
 
 type Page = 'home' | 'create' | 'settings' | 'entered';
 type SessionState =
@@ -51,8 +58,8 @@ function Brand() {
     <div className="brand">
       <b>八</b>
       <span>
-        <strong>永城八张</strong>
-        <small>YONGCHENG EIGHT</small>
+        <strong>YD八张</strong>
+        <small>YD EIGHT</small>
       </span>
     </div>
   );
@@ -93,6 +100,9 @@ export default function App() {
   const [page, setPage] = useState<Page>('home');
   const [nickname, setNickname] = useState(
     () => localStorage.getItem(NICKNAME_STORAGE_KEY) ?? '',
+  );
+  const [avatarId, setAvatarId] = useState<AvatarId>(() =>
+    loadAvatarId(localStorage),
   );
   const [roomCode, setRoomCode] = useState(initialCode);
   const [roomName, setRoomName] = useState('');
@@ -260,6 +270,7 @@ export default function App() {
       const operation = spectateRoom(
         {
           nickname: name,
+          avatarId,
           roomCode: code,
           visitorId: getOrCreateVisitorId(localStorage),
         },
@@ -332,6 +343,7 @@ export default function App() {
     void run({
       kind: 'join',
       nickname: name,
+      avatarId,
       roomCode: code,
       visitorId: getOrCreateVisitorId(localStorage),
     });
@@ -349,6 +361,7 @@ export default function App() {
     void run({
       kind: 'create',
       nickname: name,
+      avatarId,
       roomName: title,
       playerCount,
       visitorId: getOrCreateVisitorId(localStorage),
@@ -447,6 +460,38 @@ export default function App() {
                 onChange={(e) => setNickname(e.target.value)}
               />
             </label>
+            <fieldset className="avatar-picker">
+              <legend>选择头像</legend>
+              <div className="avatar-options">
+                {avatarOptions.map((option, index) => {
+                  const image = avatarImage(option);
+                  return (
+                    <button
+                      key={option}
+                      className={option === avatarId ? 'is-selected' : ''}
+                      type="button"
+                      aria-label={
+                        option === 'default'
+                          ? '使用默认头像'
+                          : `使用头像 ${index}`
+                      }
+                      aria-pressed={option === avatarId}
+                      onClick={() => {
+                        setAvatarId(option);
+                        localStorage.setItem(AVATAR_STORAGE_KEY, option);
+                      }}
+                    >
+                      {image ? (
+                        <img src={image} alt="" />
+                      ) : (
+                        <span>{nickname.trim().slice(0, 1) || '默'}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <small>默认头像使用昵称首字，也可以选择图片头像。</small>
+            </fieldset>
             <Button
               size="large"
               type="button"
@@ -644,7 +689,13 @@ export default function App() {
                   <PlayerSeat
                     key={seat}
                     name={player.nickname}
-                    avatar={player.nickname.slice(0, 1)}
+                    avatar={
+                      avatarImage(player.avatarId) ? (
+                        <img src={avatarImage(player.avatarId)!} alt="" />
+                      ) : (
+                        player.nickname.slice(0, 1)
+                      )
+                    }
                     active={player.playerId === self.playerId}
                     online={player.connection === 'online'}
                     role={[

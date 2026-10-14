@@ -19,6 +19,7 @@ import {
 } from './game-state.js';
 import {
   nicknameSchema,
+  avatarIdSchema,
   roomCodeSchema,
   roomConfigSchema,
   roomNameSchema,
@@ -37,6 +38,7 @@ const createRoomEventSchema = z.strictObject({
   type: z.literal('room.create'),
   ...requestMeta,
   nickname: nicknameSchema,
+  avatarId: avatarIdSchema.optional(),
   roomName: roomNameSchema,
   config: roomConfigSchema,
   visitorId: visitorIdSchema.optional(),
@@ -45,6 +47,7 @@ const joinRoomEventSchema = z.strictObject({
   type: z.literal('room.join'),
   ...requestMeta,
   nickname: nicknameSchema,
+  avatarId: avatarIdSchema.optional(),
   roomCode: roomCodeSchema,
   visitorId: visitorIdSchema.optional(),
 });
@@ -77,6 +80,7 @@ const spectateJoinEventSchema = z.strictObject({
   type: z.literal('spectate.join'),
   ...requestMeta,
   nickname: nicknameSchema,
+  avatarId: avatarIdSchema.optional(),
   roomCode: roomCodeSchema,
   visitorId: visitorIdSchema,
 });

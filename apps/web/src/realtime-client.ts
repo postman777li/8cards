@@ -2,6 +2,7 @@ import {
   PROTOCOL_VERSION,
   parseClientEvent,
   safeParseServerEvent,
+  type AvatarId,
   type ClientEvent,
   type GameAction,
   type PlayerId,
@@ -20,11 +21,18 @@ export type LobbyRequest =
   | {
       kind: 'create';
       nickname: string;
+      avatarId?: AvatarId;
       roomName: string;
       playerCount: 2 | 3 | 4;
       visitorId?: VisitorId;
     }
-  | { kind: 'join'; nickname: string; roomCode: string; visitorId?: VisitorId };
+  | {
+      kind: 'join';
+      nickname: string;
+      avatarId?: AvatarId;
+      roomCode: string;
+      visitorId?: VisitorId;
+    };
 type Options = {
   url: string;
   createSocket?: (url: string) => WebSocket;
@@ -410,6 +418,7 @@ export function connectToLobby(request: LobbyRequest, options: Options) {
             type: 'room.create',
             ...base,
             nickname: request.nickname,
+            avatarId: request.avatarId ?? 'default',
             roomName: request.roomName,
             config: {
               playerCount: request.playerCount,
@@ -423,6 +432,7 @@ export function connectToLobby(request: LobbyRequest, options: Options) {
             type: 'room.join',
             ...base,
             nickname: request.nickname,
+            avatarId: request.avatarId ?? 'default',
             roomCode: request.roomCode,
             ...(request.visitorId ? { visitorId: request.visitorId } : {}),
           },
@@ -673,7 +683,12 @@ function spectatorHandshake(event: ClientEvent, options: Options) {
 }
 
 export function spectateRoom(
-  input: { nickname: string; roomCode: string; visitorId: VisitorId },
+  input: {
+    nickname: string;
+    avatarId?: AvatarId;
+    roomCode: string;
+    visitorId: VisitorId;
+  },
   options: Options,
 ) {
   return spectatorHandshake(
