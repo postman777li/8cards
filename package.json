@@ -15,12 +15,14 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
+    "@playwright/test": "1.56.1",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "5.0.3",
     "eslint": "^10.0.0",

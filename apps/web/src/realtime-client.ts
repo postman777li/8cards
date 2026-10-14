@@ -138,7 +138,9 @@ class LiveConnection implements LobbyConnection {
     readonly visitorId: VisitorId | undefined,
     public view: PlayerView,
     readonly socket: WebSocket,
+    initialMessages: readonly ChatMessage[] = [],
   ) {
+    this.#messages = [...initialMessages];
     socket.onmessage = ({ data }) => this.#receive(data);
     socket.onerror = () => this.#disconnect();
     socket.onclose = () => this.#disconnect();
@@ -306,6 +308,7 @@ function handshake(event: ClientEvent, options: Options) {
   let ok = false;
   let credential: StoredSession | undefined;
   let view: PlayerView | undefined;
+  let messages: readonly ChatMessage[] = [];
   let settled = false;
   let rejectPromise: (error: Error) => void = () => undefined;
   const cleanup = (close: boolean) => {
@@ -340,6 +343,7 @@ function handshake(event: ClientEvent, options: Options) {
           credential.visitorId,
           view,
           socket,
+          messages,
         ),
       );
     };
@@ -370,6 +374,7 @@ function handshake(event: ClientEvent, options: Options) {
         ok = true;
       else if (item.type === 'session.established') credential = item;
       else if (item.type === 'state.player') view = item.view;
+      else if (item.type === 'chat.history') messages = item.messages;
       complete();
     };
   });
@@ -459,7 +464,9 @@ class LiveSpectator implements SpectatorConnection {
     readonly visitorId: VisitorId,
     public view: SpectatorView,
     readonly socket: WebSocket,
+    initialMessages: readonly ChatMessage[] = [],
   ) {
+    this.#messages = [...initialMessages];
     socket.onmessage = ({ data }) => this.#receive(data);
     socket.onerror = socket.onclose = () => {
       if (this.#closed) return;
@@ -595,6 +602,7 @@ function spectatorHandshake(event: ClientEvent, options: Options) {
       >
     | undefined;
   let view: SpectatorView | undefined;
+  let messages: readonly ChatMessage[] = [];
   let settled = false;
   let rejectPromise: (error: Error) => void = () => undefined;
   const promise = new Promise<SpectatorConnection>((resolve, reject) => {
@@ -616,6 +624,7 @@ function spectatorHandshake(event: ClientEvent, options: Options) {
             credential.visitorId,
             view,
             socket,
+            messages,
           ),
         );
       }
@@ -637,6 +646,7 @@ function spectatorHandshake(event: ClientEvent, options: Options) {
         ok = true;
       else if (item.type === 'spectator.established') credential = item;
       else if (item.type === 'state.spectator') view = item.view;
+      else if (item.type === 'chat.history') messages = item.messages;
       complete();
     };
   });

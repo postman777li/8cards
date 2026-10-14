@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { compareCards } from '@8cards/game-engine';
+import type { Card } from '@8cards/shared';
 
 import { createApp, type AppServer } from './app.js';
 import {
@@ -142,6 +143,7 @@ const setupGame = async (count: 2 | 3 | 4, wsUrl: string) => {
     ...meta('create', 1),
     nickname: 'P0',
     roomName: '联机测试',
+    visitorId: 'visitor-p0',
     config,
   });
   const hostCredential = await all[0]!.waitFor(
@@ -164,6 +166,7 @@ const setupGame = async (count: 2 | 3 | 4, wsUrl: string) => {
       ...meta(`join-${index}`, 1),
       nickname: `P${index}`,
       roomCode: code.code,
+      visitorId: `visitor-p${index}`,
     });
   }
   let version = count - 1;
@@ -242,6 +245,132 @@ describe('HTTP and WebSocket transport', () => {
 });
 
 describe('real multi-client games', () => {
+  it.each([2, 3, 4] as const)(
+    'completes a %i-player game over real WebSockets and persists its result',
+    async (count) => {
+      const historyStore = new SqliteHistoryStore(':memory:');
+      const { wsUrl } = await start(undefined, historyStore);
+      const game = await setupGame(count, wsUrl);
+      const entries = await Promise.all(
+        game.all.map(async (client) => ({
+          client,
+          credential: await client.waitFor(
+            (event) => event.type === 'session.established',
+          ),
+        })),
+      );
+      const sequences = new Map(game.all.map((client) => [client, 3]));
+      let version = game.startedVersion;
+      let finished: ReceivedEvent | undefined;
+      for (let step = 0; step < 300 && !finished; step += 1) {
+        const state = await game.all[0]!.waitFor(
+          (event) =>
+            event.type === 'state.player' && event.stateVersion === version,
+        );
+        const publicGame = (
+          state.view as {
+            public: {
+              game: {
+                phase: string;
+                currentActorId: string | null;
+                trumpSuit: 'clubs' | 'diamonds' | 'hearts' | 'spades';
+                table: Array<{ card: Card; purpose: 'attack' | 'defense' }>;
+              };
+            };
+          }
+        ).public.game;
+        if (publicGame.phase === 'finished') {
+          finished = state;
+          break;
+        }
+        const actor = entries.find(
+          (entry) => entry.credential.playerId === publicGame.currentActorId,
+        );
+        if (!actor) throw new Error('current actor has no WebSocket client');
+        const actorState = await actor.client.waitFor(
+          (event) =>
+            event.type === 'state.player' && event.stateVersion === version,
+        );
+        const privateState = (
+          actorState.view as {
+            private: {
+              hand: Card[];
+              legalActionTypes: string[];
+            };
+          }
+        ).private;
+        const sequence = sequences.get(actor.client)!;
+        sequences.set(actor.client, sequence + 1);
+        const target = [...publicGame.table]
+          .reverse()
+          .find((play) => play.purpose === 'attack')?.card;
+        const defense = target
+          ? privateState.hand.find(
+              (card) =>
+                compareCards(card, target, publicGame.trumpSuit) === 1 ||
+                (card.kind === 'joker' && target.kind !== 'joker'),
+            )
+          : undefined;
+        const action =
+          privateState.legalActionTypes.includes('beat-card') &&
+          defense &&
+          target
+            ? { kind: 'beat-card', cardId: defense.id, targetCardId: target.id }
+            : privateState.legalActionTypes.includes('collect')
+              ? { kind: 'collect' }
+              : privateState.legalActionTypes.includes('pass') &&
+                  publicGame.table.length > 0
+                ? { kind: 'pass' }
+                : privateState.legalActionTypes.includes('play-card')
+                  ? {
+                      kind: 'play-card',
+                      cardId: privateState.hand.find(
+                        (card) => card.kind === 'standard',
+                      )!.id,
+                    }
+                  : { kind: 'pass' };
+        const response = await request(actor.client, {
+          type: 'game.action',
+          ...meta(`complete-${count}-${step}`, sequence),
+          expectedStateVersion: version,
+          action,
+        });
+        expect(response.type).toBe('response.ok');
+        version = response.stateVersion as number;
+      }
+      expect(finished).toBeDefined();
+      const result = (
+        finished!.view as {
+          public: {
+            game: {
+              phase: string;
+              resultReason?: string;
+              winnerPlayerIds?: string[];
+              loserPlayerIds?: string[];
+            };
+          };
+        }
+      ).public.game;
+      expect(result.phase).toBe('finished');
+      expect(['emptied-hand', 'stuck-with-jokers']).toContain(
+        result.resultReason,
+      );
+      expect(
+        (result.winnerPlayerIds?.length ?? 0) +
+          (result.loserPlayerIds?.length ?? 0),
+      ).toBeGreaterThan(0);
+      const first = entries[0]!;
+      expect(
+        historyStore.getVisitorHistory(
+          first.credential.visitorId as Parameters<
+            HistoryStore['getVisitorHistory']
+          >[0],
+          20,
+        ).stats.games,
+      ).toBe(1);
+    },
+  );
+
   it('keeps a finished authority pending after the first write failure and retries exactly once through history', async () => {
     const historyStore = new FailOnceHistoryStore();
     const { wsUrl } = await start(undefined, historyStore);

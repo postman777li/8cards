@@ -384,12 +384,6 @@ export class RealtimeService {
         visitorId: spectatorCredential.visitorId,
       });
     if (
-      (event.type === 'session.resume' || event.type === 'spectate.resume') &&
-      changedRoom &&
-      connection.identity
-    )
-      responses.push(this.#identityState(changedRoom, connection.identity));
-    if (
       (event.type === 'session.resume' ||
         event.type === 'spectate.join' ||
         event.type === 'spectate.resume') &&
@@ -400,6 +394,12 @@ export class RealtimeService {
         protocolVersion: PROTOCOL_VERSION,
         messages: changedRoom.chat,
       });
+    if (
+      (event.type === 'session.resume' || event.type === 'spectate.resume') &&
+      changedRoom &&
+      connection.identity
+    )
+      responses.push(this.#identityState(changedRoom, connection.identity));
     connection.bySequence.set(event.actionSequence, {
       requestId: event.requestId,
       canonical,

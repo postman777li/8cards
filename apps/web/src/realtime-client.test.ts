@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ChatMessage } from '@8cards/shared';
 import {
   connectToLobby,
   LobbyConnectionError,
@@ -445,6 +446,19 @@ describe('websocket lobby client', () => {
       visitorId: 'visitor-1',
     });
     socket.message({
+      type: 'chat.history',
+      ...meta,
+      messages: [
+        {
+          messageId: 'message-1',
+          senderNickname: '先到玩家',
+          message: '<b>握手前历史</b>',
+          sentAt: '2026-10-14T00:00:00.000Z',
+          chatVersion: 1,
+        },
+      ],
+    });
+    socket.message({
       type: 'state.spectator',
       ...meta,
       stateVersion: 4,
@@ -454,6 +468,11 @@ describe('websocket lobby client', () => {
       },
     });
     const connection = await operation.promise;
+    const histories: Array<readonly ChatMessage[]> = [];
+    connection.subscribeChat((messages) => histories.push(messages));
+    expect(histories.at(-1)).toEqual([
+      expect.objectContaining({ message: '<b>握手前历史</b>' }),
+    ]);
     const first = connection.leave();
     const second = connection.leave();
     expect(second).toBe(first);
