@@ -71,6 +71,17 @@ const startEventSchema = z.strictObject({
   type: z.literal('room.start'),
   ...versionedRequestMeta,
 });
+const seatRequestEventSchema = z.strictObject({
+  type: z.literal('room.seat.request'),
+  ...versionedRequestMeta,
+  targetSeat: z.number().int().min(0).max(3),
+});
+const seatRespondEventSchema = z.strictObject({
+  type: z.literal('room.seat.respond'),
+  ...versionedRequestMeta,
+  seatRequestId: z.string().min(1).max(128),
+  accept: z.boolean(),
+});
 const chatEventSchema = z.strictObject({
   type: z.literal('chat.send'),
   ...versionedRequestMeta,
@@ -112,6 +123,15 @@ const gameActionEventSchema = z.strictObject({
   ...versionedRequestMeta,
   action: gameActionSchema,
 });
+const seriesContinueEventSchema = z.strictObject({
+  type: z.literal('series.continue'),
+  ...versionedRequestMeta,
+  continue: z.boolean(),
+});
+const seriesExitEventSchema = z.strictObject({
+  type: z.literal('series.exit'),
+  ...versionedRequestMeta,
+});
 const historyGetEventSchema = z.strictObject({
   type: z.literal('history.get'),
   ...requestMeta,
@@ -123,11 +143,15 @@ export const clientEventSchema = z.discriminatedUnion('type', [
   leaveRoomEventSchema,
   readyEventSchema,
   startEventSchema,
+  seatRequestEventSchema,
+  seatRespondEventSchema,
   chatEventSchema,
   spectateJoinEventSchema,
   spectateResumeEventSchema,
   spectateLeaveEventSchema,
   gameActionEventSchema,
+  seriesContinueEventSchema,
+  seriesExitEventSchema,
   historyGetEventSchema,
 ]);
 

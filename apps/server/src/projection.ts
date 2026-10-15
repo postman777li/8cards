@@ -7,6 +7,7 @@ import {
   type PlayerId,
   type PlayerView,
   type PublicSnapshot,
+  type RoomSeries,
   spectatorViewSchema,
   type SpectatorView,
 } from '@8cards/shared';
@@ -121,8 +122,9 @@ const roles = (authority: AuthorityState, playerId: PlayerId) => {
 
 const projectGame = (
   authority: AuthorityState,
-  roomId: string,
+  room: RoomSnapshot,
   turnDeadline: string | null,
+  roundNumber = 1,
 ): GamePublicState => {
   const { state } = authority;
   const winners = winnerIds(authority);
@@ -133,7 +135,7 @@ const projectGame = (
       ? authority.state.attacker
       : authority.state.roundAttacker;
   return {
-    gameId: `game-${roomId}` as GameId,
+    gameId: `game-${room.roomId}-${roundNumber}` as GameId,
     phase: gamePhase(state),
     trumpSuit: state.trumpSuit,
     exposedCard: state.bottomCard,
@@ -154,11 +156,26 @@ const projectGame = (
           ]
         : []),
     ]),
-    players: state.players.map((playerId) => ({
-      playerId,
-      handCount: state.hands.get(playerId)?.length ?? 0,
-      ...roles(authority, playerId),
-    })),
+    players: [
+      ...state.players.map((playerId) => ({
+        playerId,
+        handCount: state.hands.get(playerId)?.length ?? 0,
+        ...roles(authority, playerId),
+      })),
+      ...room.players
+        .filter((player) => !state.players.includes(player.playerId))
+        .map((player) => ({
+          playerId: player.playerId,
+          handCount: 0,
+          role: 'observer' as const,
+          team:
+            room.config.playerCount === 4
+              ? player.seat % 2 === 0
+                ? ('team-a' as const)
+                : ('team-b' as const)
+              : ('solo' as const),
+        })),
+    ],
     currentActorId: state.actor,
     attackerId:
       authority.mode === 2
@@ -178,6 +195,7 @@ export const projectPublicSnapshot = (
   stateVersion: number,
   authority?: AuthorityState,
   turnDeadline: string | null = null,
+  series?: RoomSeries,
 ): PublicSnapshot =>
   publicSnapshotSchema.parse({
     stateVersion,
@@ -188,8 +206,12 @@ export const projectPublicSnapshot = (
       config: room.config,
       players: room.players,
       spectators: room.spectators,
+      seatSwapRequest: room.seatSwapRequest ?? null,
     },
-    game: authority ? projectGame(authority, room.roomId, turnDeadline) : null,
+    game: authority
+      ? projectGame(authority, room, turnDeadline, series?.roundNumber)
+      : null,
+    ...(series ? { series } : {}),
   });
 
 const legalActions = (
@@ -220,7 +242,7 @@ const legalActions = (
     if (state.phase === 'awaiting-defense') result.push('beat-card');
     else {
       result.push('play-card');
-      result.push('pass');
+      if (state.table.length > 0) result.push('pass');
     }
   }
   return result;
@@ -232,12 +254,19 @@ export const projectPlayerView = (
   playerId: PlayerId,
   authority?: AuthorityState,
   turnDeadline: string | null = null,
+  series?: RoomSeries,
 ): PlayerView => {
   const hand: readonly Card[] = authority?.state.hands.get(playerId) ?? [];
   return playerViewSchema.parse({
     audience: 'player',
     viewerPlayerId: playerId,
-    public: projectPublicSnapshot(room, stateVersion, authority, turnDeadline),
+    public: projectPublicSnapshot(
+      room,
+      stateVersion,
+      authority,
+      turnDeadline,
+      series,
+    ),
     private: { hand, legalActionTypes: legalActions(authority, playerId) },
   });
 };
@@ -247,8 +276,15 @@ export const projectSpectatorView = (
   stateVersion: number,
   authority?: AuthorityState,
   turnDeadline: string | null = null,
+  series?: RoomSeries,
 ): SpectatorView =>
   spectatorViewSchema.parse({
     audience: 'spectator',
-    public: projectPublicSnapshot(room, stateVersion, authority, turnDeadline),
+    public: projectPublicSnapshot(
+      room,
+      stateVersion,
+      authority,
+      turnDeadline,
+      series,
+    ),
   });

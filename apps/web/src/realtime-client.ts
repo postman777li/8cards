@@ -49,6 +49,10 @@ export interface LobbyConnection {
   ready(value: boolean): Promise<void>;
   start(): Promise<void>;
   leave(): Promise<void>;
+  requestSeat(targetSeat: 0 | 1 | 2 | 3): Promise<void>;
+  respondSeat(seatRequestId: string, accept: boolean): Promise<void>;
+  continueSeries(value: boolean): Promise<void>;
+  exitSeries(): Promise<void>;
   action(value: GameAction): Promise<void>;
   chat(message: string): Promise<void>;
   history(): Promise<void>;
@@ -162,8 +166,20 @@ class LiveConnection implements LobbyConnection {
   leave() {
     return this.#send('room.leave', {});
   }
+  requestSeat(targetSeat: 0 | 1 | 2 | 3) {
+    return this.#send('room.seat.request', { targetSeat });
+  }
+  respondSeat(seatRequestId: string, accept: boolean) {
+    return this.#send('room.seat.respond', { seatRequestId, accept });
+  }
   action(value: GameAction) {
     return this.#send('game.action', { action: value });
+  }
+  continueSeries(value: boolean) {
+    return this.#send('series.continue', { continue: value });
+  }
+  exitSeries() {
+    return this.#send('series.exit', {});
   }
   chat(message: string) {
     return this.#send('chat.send', { message }, false);
@@ -200,10 +216,22 @@ class LiveConnection implements LobbyConnection {
       | 'room.ready'
       | 'room.start'
       | 'room.leave'
+      | 'room.seat.request'
+      | 'room.seat.respond'
       | 'game.action'
       | 'chat.send'
-      | 'history.get',
-    body: { ready?: boolean; action?: GameAction; message?: string },
+      | 'history.get'
+      | 'series.continue'
+      | 'series.exit',
+    body: {
+      ready?: boolean;
+      action?: GameAction;
+      message?: string;
+      targetSeat?: 0 | 1 | 2 | 3;
+      seatRequestId?: string;
+      accept?: boolean;
+      continue?: boolean;
+    },
     blocking = true,
   ) {
     if (this.#closed || (blocking && this.#blockingPending > 0))

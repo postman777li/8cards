@@ -14,6 +14,7 @@ import {
   resultCopy,
   secondsRemaining,
   sortHand,
+  unreadMessages,
 } from './game-table.js';
 
 const card = (id: string): Card => {
@@ -59,6 +60,25 @@ describe('game table authority mapping', () => {
     ]);
   });
 
+  it('places the current trump suit first, ranks low to high, and jokers last', () => {
+    const hand = [
+      card('small-joker'),
+      card('clubs-A'),
+      card('hearts-10'),
+      card('hearts-2'),
+      card('diamonds-3'),
+      card('big-joker'),
+    ];
+    expect(sortHand(hand, 'hearts').map((item) => item.id)).toEqual([
+      'hearts-2',
+      'hearts-10',
+      'clubs-A',
+      'diamonds-3',
+      'small-joker',
+      'big-joker',
+    ]);
+  });
+
   it('pairs public attack and defense purposes and retains an uncovered attack', () => {
     const table = [
       { playerId: 'p1', card: card('clubs-3'), purpose: 'attack' },
@@ -81,6 +101,41 @@ describe('game table authority mapping', () => {
       secondsRemaining(deadline, Date.parse('2026-10-13T12:00:21.000Z')),
     ).toBe(0);
     expect(secondsRemaining(null, Date.now())).toBeNull();
+  });
+
+  it('counts only new messages from other identities as unread', () => {
+    const messages = [
+      {
+        messageId: 'm1',
+        senderPlayerId: 'self',
+        senderNickname: '我',
+        message: '旧',
+        sentAt: '2026-10-15T00:00:00.000Z',
+        chatVersion: 1,
+      },
+      {
+        messageId: 'm2',
+        senderPlayerId: 'other',
+        senderNickname: '友',
+        message: '新',
+        sentAt: '2026-10-15T00:00:01.000Z',
+        chatVersion: 2,
+      },
+      {
+        messageId: 'm3',
+        senderPlayerId: 'self',
+        senderNickname: '我',
+        message: '自己',
+        sentAt: '2026-10-15T00:00:02.000Z',
+        chatVersion: 3,
+      },
+    ] as import('@8cards/shared').ChatMessage[];
+    expect(
+      unreadMessages(messages, 1, 'self' as never).map(
+        (item) => item.messageId,
+      ),
+    ).toEqual(['m2']);
+    expect(unreadMessages(messages, 3, 'self' as never)).toEqual([]);
   });
 
   it('labels public four-player teams and round roles without inferring them from seats', () => {

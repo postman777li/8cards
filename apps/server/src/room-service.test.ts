@@ -189,6 +189,99 @@ describe('RoomService creation and joining', () => {
   });
 });
 
+describe('RoomService authoritative seat changes', () => {
+  it('expires an exact pending request as a versioned room mutation', () => {
+    const { service } = factory();
+    const host = service.createRoom({
+      nickname: 'A',
+      roomName: '换座',
+      config: config(3),
+    });
+    const guest = service.joinRoom({ roomCode: host.room.code, nickname: 'B' });
+    const requested = service.requestSeat({
+      roomId: host.room.roomId,
+      playerId: host.playerId,
+      reconnectToken: host.reconnectToken,
+      targetSeat: 1,
+      expectedStateVersion: guest.room.stateVersion,
+    });
+    const expired = service.expireSeatRequest(
+      host.room.roomId,
+      requested.seatSwapRequest!.requestId,
+    );
+    expect(expired?.seatSwapRequest).toBeNull();
+    expect(expired?.stateVersion).toBe(requested.stateVersion + 1);
+    expect(
+      service.expireSeatRequest(host.room.roomId, 'already-expired'),
+    ).toBeUndefined();
+  });
+
+  it('moves to an empty seat and swaps only after consent while preserving host identity', () => {
+    const { service } = factory();
+    const host = service.createRoom({
+      nickname: 'A',
+      roomName: '换座',
+      config: config(3),
+    });
+    const guest = service.joinRoom({ roomCode: host.room.code, nickname: 'B' });
+    let room = service.requestSeat({
+      roomId: host.room.roomId,
+      playerId: host.playerId,
+      reconnectToken: host.reconnectToken,
+      targetSeat: 2,
+      expectedStateVersion: guest.room.stateVersion,
+    });
+    expect(
+      room.players.find((item) => item.playerId === host.playerId)?.seat,
+    ).toBe(2);
+    room = service.requestSeat({
+      roomId: host.room.roomId,
+      playerId: host.playerId,
+      reconnectToken: host.reconnectToken,
+      targetSeat: 1,
+      expectedStateVersion: room.stateVersion,
+    });
+    expect(room.seatSwapRequest).toMatchObject({
+      requesterId: host.playerId,
+      targetPlayerId: guest.playerId,
+    });
+    room = service.respondSeat({
+      roomId: host.room.roomId,
+      playerId: guest.playerId,
+      reconnectToken: guest.reconnectToken,
+      seatRequestId: room.seatSwapRequest!.requestId,
+      accept: true,
+      expectedStateVersion: room.stateVersion,
+    });
+    expect(
+      room.players.find((item) => item.playerId === host.playerId),
+    ).toMatchObject({ seat: 1, isHost: true, readiness: 'not-ready' });
+    expect(
+      room.players.find((item) => item.playerId === guest.playerId),
+    ).toMatchObject({ seat: 2, isHost: false, readiness: 'not-ready' });
+  });
+
+  it('rejects seat changes in two-player and started rooms', () => {
+    const two = factory().service;
+    const host = two.createRoom({
+      nickname: 'A',
+      roomName: '二人',
+      config: config(2),
+    });
+    expectCode(
+      () =>
+        two.requestSeat({
+          roomId: host.room.roomId,
+          playerId: host.playerId,
+          reconnectToken: host.reconnectToken,
+          targetSeat: 1,
+          expectedStateVersion: host.room.stateVersion,
+        }),
+      'INVALID_INPUT',
+    );
+  });
+});
+
 describe('RoomService permissions and lifecycle', () => {
   it('validates start eligibility without persisting lifecycle or version changes', () => {
     const store = new TrackingDetachedStore();

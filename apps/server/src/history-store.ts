@@ -18,6 +18,7 @@ export interface VisitorHistory {
 
 export interface HistoryStore {
   saveGame(game: PersistedGame): Promise<'inserted' | 'existing'>;
+  saveSeries?(series: PersistedSeries): Promise<'inserted' | 'existing'>;
   getVisitorHistory(
     visitorId: VisitorId,
     limit?: number,
@@ -25,19 +26,28 @@ export interface HistoryStore {
   ping(): Promise<void>;
   close(): Promise<void>;
 }
+export interface PersistedSeries {
+  seriesId: string;
+  roomId: string;
+  endedAt: string;
+  summary: unknown;
+}
 
-const migrationPath = (dialect: 'sqlite' | 'postgres') =>
+const migrationPath = (dialect: 'sqlite' | 'postgres', version = 1) =>
   process.env.EIGHTCARDS_MIGRATIONS_DIR
     ? resolve(
         process.env.EIGHTCARDS_MIGRATIONS_DIR,
-        `001_history.${dialect}.sql`,
+        `${String(version).padStart(3, '0')}_${version === 1 ? 'history' : 'room_series'}.${dialect}.sql`,
       )
     : fileURLToPath(
-        new URL(`../migrations/001_history.${dialect}.sql`, import.meta.url),
+        new URL(
+          `../migrations/${String(version).padStart(3, '0')}_${version === 1 ? 'history' : 'room_series'}.${dialect}.sql`,
+          import.meta.url,
+        ),
       );
 
-const readMigration = (dialect: 'sqlite' | 'postgres') =>
-  readFileSync(migrationPath(dialect), 'utf8');
+const readMigration = (dialect: 'sqlite' | 'postgres', version = 1) =>
+  readFileSync(migrationPath(dialect, version), 'utf8');
 
 const emptyStats = () => ({ games: 0, wins: 0, losses: 0, unresolved: 0 });
 
@@ -73,23 +83,39 @@ export class SqliteHistoryStore implements HistoryStore {
         applied_at TEXT NOT NULL
       );
     `);
-    const applied = this.#db
-      .prepare('SELECT 1 FROM schema_migrations WHERE version = 1')
-      .get();
-    if (applied) return;
-    this.#db.exec('BEGIN IMMEDIATE');
-    try {
-      this.#db.exec(readMigration('sqlite'));
-      this.#db
-        .prepare(
-          'INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)',
-        )
-        .run(new Date().toISOString());
-      this.#db.exec('COMMIT');
-    } catch (error) {
-      this.#db.exec('ROLLBACK');
-      throw error;
+    for (const version of [1, 2]) {
+      const applied = this.#db
+        .prepare('SELECT 1 FROM schema_migrations WHERE version = ?')
+        .get(version);
+      if (applied) continue;
+      this.#db.exec('BEGIN IMMEDIATE');
+      try {
+        this.#db.exec(readMigration('sqlite', version));
+        this.#db
+          .prepare(
+            'INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)',
+          )
+          .run(version, new Date().toISOString());
+        this.#db.exec('COMMIT');
+      } catch (error) {
+        this.#db.exec('ROLLBACK');
+        throw error;
+      }
     }
+  }
+
+  async saveSeries(series: PersistedSeries): Promise<'inserted' | 'existing'> {
+    const result = this.#db
+      .prepare(
+        'INSERT OR IGNORE INTO room_series(series_id, room_id, summary_json, ended_at) VALUES(?,?,?,?)',
+      )
+      .run(
+        series.seriesId,
+        series.roomId,
+        JSON.stringify(series.summary),
+        series.endedAt,
+      );
+    return result.changes ? 'inserted' : 'existing';
   }
 
   async saveGame(game: PersistedGame): Promise<'inserted' | 'existing'> {
@@ -201,16 +227,18 @@ export class PostgresHistoryStore implements HistoryStore {
           applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
-      const applied = await client.query(
-        'SELECT 1 FROM schema_migrations WHERE version = $1',
-        [1],
-      );
-      if (applied.rowCount === 0) {
-        await client.query(readMigration('postgres'));
-        await client.query(
-          'INSERT INTO schema_migrations(version) VALUES($1)',
-          [1],
+      for (const version of [1, 2]) {
+        const applied = await client.query(
+          'SELECT 1 FROM schema_migrations WHERE version = $1',
+          [version],
         );
+        if (applied.rowCount === 0) {
+          await client.query(readMigration('postgres', version));
+          await client.query(
+            'INSERT INTO schema_migrations(version) VALUES($1)',
+            [version],
+          );
+        }
       }
       await client.query('COMMIT');
     } catch (error) {
@@ -245,6 +273,20 @@ export class PostgresHistoryStore implements HistoryStore {
     } finally {
       client.release();
     }
+  }
+
+  async saveSeries(series: PersistedSeries): Promise<'inserted' | 'existing'> {
+    const result = await this.pool.query(
+      `INSERT INTO room_series(series_id, room_id, summary_json, ended_at)
+       VALUES($1,$2,$3::jsonb,$4::timestamptz) ON CONFLICT(series_id) DO NOTHING RETURNING series_id`,
+      [
+        series.seriesId,
+        series.roomId,
+        JSON.stringify(series.summary),
+        series.endedAt,
+      ],
+    );
+    return result.rowCount ? 'inserted' : 'existing';
   }
 
   async #insertVisitors(client: PoolClient, game: PersistedGame) {

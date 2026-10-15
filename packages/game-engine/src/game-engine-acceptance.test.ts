@@ -162,8 +162,7 @@ function exchangeAction(state: ActiveState): AnyAction | null {
 
 function attackCandidates(state: ActiveState): Card[] {
   if (state.phase !== 'awaiting-attack') return [];
-  if (state.attackCount + 1 > state.hands.get(state.defender)!.length)
-    return [];
+  if (state.attackCount + 1 > state.roundAttackLimit) return [];
   return state.hands.get(state.actor)!.filter((card) => {
     if (card.kind === 'joker') return false;
     return state.table.length === 0 || state.leadRanks.has(card.rank);

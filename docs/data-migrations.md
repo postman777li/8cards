@@ -9,3 +9,5 @@
 迁移不得保存实时连接对象、房间权威状态、手牌、牌墩、随机源、聊天或重连令牌。应用重启会丢失进行中房间，已完成历史由 PostgreSQL 保留。
 
 新增迁移只能追加更高编号，已部署迁移不得原地修改。生产迁移前先用 `scripts/backup-postgres.sh` 生成逻辑备份，并按 `docs/operations.md` 恢复到空白测试库演练。真 PostgreSQL 并发测试由 `POSTGRES_TEST_DATABASE_URL` 显式启用，变量必须指向名称包含 `8cards_test` 的隔离数据库。
+
+任务 21 追加版本 2：`002_room_series.sqlite.sql` 与 `002_room_series.postgres.sql` 新增 `room_series` 汇总表，使用 `series_id` 幂等保存最终排名、积分、胜负、连胜和称号 JSON。版本 1 文件保持不变；SQLite 与 PostgreSQL 启动迁移均按 1、2 顺序跳过已应用版本。旧备份可直接向前迁移，回滚应用时版本 2 表可保留且不影响旧代码。

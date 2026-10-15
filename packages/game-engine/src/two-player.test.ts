@@ -265,6 +265,23 @@ describe('attacks and defenses', () => {
 });
 
 describe('round settlement and limits', () => {
+  it('allows the sixth attack under a six-card snapshot and rejects the seventh', () => {
+    const ready = defend(attack(initial(), 'clubs-3'), 'clubs-4');
+    const prepared = {
+      ...ready,
+      leadRanks: new Set([...ready.leadRanks, '5' as const]),
+    };
+    const sixth = attack(
+      { ...prepared, attackCount: 5, roundAttackLimit: 6 },
+      'clubs-5',
+    );
+    expect(sixth.attackCount).toBe(6);
+    expectCode(
+      () =>
+        attack({ ...prepared, attackCount: 6, roundAttackLimit: 6 }, 'clubs-5'),
+      'ATTACK_LIMIT_REACHED',
+    );
+  });
   it('allows passing with a legal attack and swaps roles after attacker-first replenishment', () => {
     let state = defend(attack(initial(), 'clubs-3'), 'clubs-4');
     const top = state.stock.slice(0, 2).map((value) => value.id);
@@ -397,7 +414,7 @@ describe('round settlement and limits', () => {
     assertTwoPlayerInvariant(state);
   });
 
-  it('enforces the live 8-card limit at four successful defenses', () => {
+  it('keeps the opening eight-card limit fixed after successful defenses', () => {
     const source = deal(
       [
         'clubs-3',
@@ -431,10 +448,9 @@ describe('round settlement and limits', () => {
     }
     expect(state.attackCount).toBe(4);
     expect(state.hands.get('bob')).toHaveLength(4);
-    expectCode(() => attack(state, 'spades-7'), 'ATTACK_LIMIT_REACHED');
-    expect(
-      applyTwoPlayerAction(state, { type: 'pass', playerId: 'alice' }).phase,
-    ).toBe('awaiting-attack');
+    state = attack(state, 'spades-7');
+    expect(state.attackCount).toBe(5);
+    expect(state.phase).toBe('awaiting-defense');
   });
 
   it('does not draw for hands at or over eight and exhausts short stock in order', () => {

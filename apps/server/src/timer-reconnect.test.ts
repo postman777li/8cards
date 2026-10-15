@@ -101,11 +101,16 @@ const publicOf = (event: Event) =>
         game: {
           currentActorId: string;
           turnDeadline: string;
-          table: unknown[];
+          table: Array<{ purpose: string }>;
+          players: Array<{ playerId: string; handCount: number }>;
           trumpSuit: string;
           attackerId: string;
           defenderId: string;
         } | null;
+        series?: {
+          phase: string;
+          participants: Array<{ playerId: string; score: number }>;
+        };
       };
     }
   ).public;
@@ -374,6 +379,97 @@ describe('authoritative turn timers', () => {
 });
 
 describe('disconnect and session restoration', () => {
+  it('automatically expires and broadcasts a pending seat swap after 30 seconds', async () => {
+    const clock = new FakeClock();
+    const server = createApp({ clock });
+    servers.add(server);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`;
+    const host = await Client.connect(url);
+    const guest = await Client.connect(url);
+    clients.add(host);
+    clients.add(guest);
+    await send(host, {
+      type: 'room.create',
+      ...meta('seat-create', 1),
+      nickname: 'A',
+      roomName: '换座计时',
+      config: {
+        playerCount: 3,
+        allowSpectators: true,
+        allowChat: true,
+        turnTimeoutSeconds: 20,
+      },
+    });
+    const created = await state(host, 0);
+    const joined = await send(guest, {
+      type: 'room.join',
+      ...meta('seat-join', 1),
+      nickname: 'B',
+      roomCode: publicOf(created).room.code,
+    });
+    expect(joined.stateVersion).toBe(1);
+    await send(host, {
+      type: 'room.seat.request',
+      ...meta('seat-request', 2),
+      expectedStateVersion: 1,
+      targetSeat: 1,
+    });
+    const pending = await state(guest, 2);
+    expect(
+      (pending.view as { public: { room: { seatSwapRequest: unknown } } })
+        .public.room.seatSwapRequest,
+    ).not.toBeNull();
+
+    clock.advance(29_999);
+    expect(
+      guest.events.some(
+        (event) => event.type === 'state.player' && event.stateVersion === 3,
+      ),
+    ).toBe(false);
+    clock.advance(1);
+    const expired = await state(guest, 3);
+    expect(
+      (expired.view as { public: { room: { seatSwapRequest: unknown } } })
+        .public.room.seatSwapRequest,
+    ).toBeNull();
+  });
+
+  it('forfeits the series only after the three-minute reconnect grace expires', async () => {
+    const game = await setup(2);
+    const disconnectedPlayerId = game.credentials[1]!.playerId as string;
+    await game.players[1]!.close();
+    clients.delete(game.players[1]!);
+    await state(game.players[0]!, game.version + 1);
+
+    game.clock.advance(179_999);
+    expect(
+      game.players[0]!.events.some(
+        (event) =>
+          (
+            event.view as
+              { public?: { series?: { phase: string } } } | undefined
+          )?.public?.series?.phase === 'series-result',
+      ),
+    ).toBe(false);
+
+    game.clock.advance(1);
+    const forfeited = await game.players[0]!.find(
+      (event) =>
+        (event.view as { public?: { series?: { phase: string } } } | undefined)
+          ?.public?.series?.phase === 'series-result',
+    );
+    const series = publicOf(forfeited).series!;
+    expect(
+      series.participants.find((item) => item.playerId === disconnectedPlayerId)
+        ?.score,
+    ).toBe(-1);
+    expect(series.participants.reduce((sum, item) => sum + item.score, 0)).toBe(
+      0,
+    );
+  });
+
   it('atomically replaces an online socket without increasing the public version', async () => {
     const game = await setup(2);
     const old = game.players[1]!;
@@ -406,9 +502,7 @@ describe('disconnect and session restoration', () => {
       const game = await setup(count);
       const target = game.players[1]!;
       const credential = game.credentials[1]!;
-      const before = await state(target, game.version);
-      const oldHand = (before.view as { private: { hand: unknown[] } }).private
-        .hand;
+      await state(target, game.version);
       await target.close();
       clients.delete(target);
       const disconnected = await state(game.players[0]!, game.version + 1);
@@ -427,7 +521,8 @@ describe('disconnect and session restoration', () => {
       expect(afterTimeoutGame.currentActorId).not.toBe(
         beforeTimeoutGame.currentActorId,
       );
-      expect(afterTimeoutGame.table).toEqual([]);
+      expect(afterTimeoutGame.table).toHaveLength(1);
+      expect(afterTimeoutGame.table[0]?.purpose).toBe('attack');
       const resumed = await Client.connect(game.url);
       clients.add(resumed);
       const response = await send(resumed, {
@@ -448,7 +543,11 @@ describe('disconnect and session restoration', () => {
       const restored = await state(resumed, game.version + 3);
       expect(
         (restored.view as { private: { hand: unknown[] } }).private.hand,
-      ).toEqual(oldHand);
+      ).toHaveLength(
+        afterTimeoutGame.players.find(
+          (item) => item.playerId === credential.playerId,
+        )!.handCount,
+      );
       const retryCount = resumed.events.length;
       resumed.send({
         type: 'session.resume',

@@ -179,6 +179,19 @@ describe('four-player teams, initialization, and permissions', () => {
 });
 
 describe('dual attacker cursor, ranks, limits, and taking', () => {
+  it('allows the team sixth attack under a six-card snapshot and rejects the seventh', () => {
+    const ready = defend(attack(initial(), 'clubs-3'), 'clubs-4');
+    const sixth = attack(
+      { ...ready, attackCount: 5, roundAttackLimit: 6 },
+      'hearts-4',
+    );
+    expect(sixth.attackCount).toBe(6);
+    expectCode(
+      () =>
+        attack({ ...ready, attackCount: 6, roundAttackLimit: 6 }, 'hearts-4'),
+      'ATTACK_LIMIT_REACHED',
+    );
+  });
   it('alternates A and C after defenses and supports consecutive pass settlement', () => {
     let state = defend(attack(initial(), 'clubs-3'), 'clubs-4');
     expect(state).toMatchObject({ actor: 'C', attackCursor: 'C' });
@@ -195,12 +208,12 @@ describe('dual attacker cursor, ranks, limits, and taking', () => {
   });
 
   it('resets passes after a legal attack so the earlier passer returns', () => {
-    let state = pass(initial());
-    state = defend(attack(state, 'hearts-3'), 'diamonds-5');
-    expect(state).toMatchObject({ actor: 'A', consecutivePasses: 0 });
+    let state = pass(defend(attack(initial(), 'clubs-3'), 'clubs-4'));
+    state = defend(attack(state, 'spades-4'), 'diamonds-5');
+    expect(state).toMatchObject({ actor: 'C', consecutivePasses: 0 });
   });
 
-  it('shares ranks and live count while rejecting illegal attacks and defenses', () => {
+  it('shares ranks and a fixed round count while rejecting illegal attacks and defenses', () => {
     let state = defend(attack(initial(), 'clubs-3'), 'clubs-4');
     expect(state.leadRanks).toEqual(new Set(['3', '4']));
     expectCode(() => attack(state, 'spades-5'), 'RANK_NOT_ON_TABLE');
@@ -208,7 +221,8 @@ describe('dual attacker cursor, ranks, limits, and taking', () => {
     state = defend(attack(state, 'spades-4'), 'diamonds-6');
     state = defend(attack(state, 'hearts-3'), 'diamonds-7');
     expect(state.attackCount).toBe(4);
-    expectCode(() => attack(state, 'hearts-5'), 'ATTACK_LIMIT_REACHED');
+    state = attack(state, 'hearts-5');
+    expect(state.attackCount).toBe(5);
     const jokerState = createFourPlayerState(
       deal({ A: ['big-joker', ...defaults.A.slice(1)] }),
       players,
@@ -384,7 +398,9 @@ describe('replenishment, complete flow, exchange, and terminal teams', () => {
       ),
       discard: [...state.discard, ...moved],
     };
-    const result = pass(state);
+    const actor = loser === 'A' ? 'C' : 'A';
+    const opening = actor === 'C' ? 'hearts-3' : 'clubs-3';
+    const result = attack({ ...state, actor, attackCursor: actor }, opening);
     expect(result.result).toMatchObject({
       triggerPlayer: loser,
       reason: 'stuck-with-jokers',

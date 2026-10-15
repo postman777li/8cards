@@ -64,6 +64,7 @@ interface StateData<PlayerId extends string> {
   readonly table: readonly TablePair[];
   readonly leadRanks: ReadonlySet<StandardRank>;
   readonly attackCount: number;
+  readonly roundAttackLimit: number;
   readonly consecutivePasses: number;
   readonly indicatorExchanged: boolean;
   readonly version: number;
@@ -267,6 +268,7 @@ export function createFourPlayerState<PlayerId extends string>(
     table: [],
     leadRanks: new Set(),
     attackCount: 0,
+    roundAttackLimit: deal.hands.get(deal.firstDefender)!.length,
     consecutivePasses: 0,
     indicatorExchanged: false,
     version: 0,
@@ -342,6 +344,7 @@ function settle<PlayerId extends string>(
     table: [],
     leadRanks: new Set(),
     attackCount: 0,
+    roundAttackLimit: replenished.hands.get(roundRoles.defender)!.length,
     consecutivePasses: 0,
     version: state.version + 1,
     result: null,
@@ -416,8 +419,8 @@ export function applyFourPlayerAction<PlayerId extends string>(
       fail('JOKER_CANNOT_ATTACK', 'Jokers cannot attack');
     if (active.table.length && !active.leadRanks.has(handCard.rank))
       fail('RANK_NOT_ON_TABLE', 'Rank has not appeared');
-    if (active.attackCount + 1 > active.hands.get(active.defender)!.length)
-      fail('ATTACK_LIMIT_REACHED', 'Real-time limit reached');
+    if (active.attackCount + 1 > active.roundAttackLimit)
+      fail('ATTACK_LIMIT_REACHED', 'Fixed round limit reached');
     const removed = removeCard(active, action.playerId, action.cardId);
     return finalize({
       ...active,
@@ -435,6 +438,8 @@ export function applyFourPlayerAction<PlayerId extends string>(
   if (action.type === 'pass') {
     if (active.phase !== 'awaiting-attack')
       fail('WRONG_PHASE', 'Passing is not expected');
+    if (active.table.length === 0)
+      fail('WRONG_PHASE', 'The primary attacker must open the round');
     if (active.consecutivePasses + 1 === 2) return settle(active, 'defended');
     const cursor = active.attackers.find((p) => p !== active.attackCursor)!;
     return finalize({

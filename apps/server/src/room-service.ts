@@ -21,6 +21,7 @@ import {
   type RoomId,
   type RoomPublicState,
   type SeatIndex,
+  type SeatSwapRequest,
 } from '@8cards/shared';
 
 export type RoomLifecycle = 'waiting' | 'started';
@@ -90,6 +91,7 @@ interface StoredRoom {
   lifecycle: RoomLifecycle;
   stateVersion: number;
   revision: number;
+  seatSwapRequest?: SeatSwapRequest;
 }
 
 export interface RoomStore {
@@ -107,6 +109,9 @@ const cloneStoredRoom = (room: StoredRoom): StoredRoom => ({
     ...player,
     tokenDigest: Buffer.from(player.tokenDigest),
   })),
+  ...(room.seatSwapRequest
+    ? { seatSwapRequest: { ...room.seatSwapRequest } }
+    : {}),
 });
 
 export class InMemoryRoomStore implements RoomStore {
@@ -152,6 +157,7 @@ export interface RoomServiceOptions {
   readonly roomCode?: () => string;
   readonly reconnectToken?: () => string;
   readonly maxCodeAttempts?: number;
+  readonly now?: () => number;
 }
 
 const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -178,6 +184,7 @@ export class RoomService {
   readonly #roomCode: () => string;
   readonly #token: () => string;
   readonly #maxCodeAttempts: number;
+  readonly #now: () => number;
 
   constructor(options: RoomServiceOptions = {}) {
     this.#store = options.store ?? new InMemoryRoomStore();
@@ -187,6 +194,7 @@ export class RoomService {
     this.#token =
       options.reconnectToken ?? (() => randomBytes(32).toString('base64url'));
     this.#maxCodeAttempts = options.maxCodeAttempts ?? 16;
+    this.#now = options.now ?? Date.now;
   }
 
   createRoom(input: {
@@ -309,6 +317,103 @@ export class RoomService {
     return this.#snapshot(room);
   }
 
+  requestSeat(input: {
+    roomId: RoomId;
+    playerId: PlayerId;
+    reconnectToken: string;
+    targetSeat: SeatIndex;
+    expectedStateVersion: number;
+  }): RoomSnapshot {
+    const { room, player } = this.#authenticate(input);
+    this.#waiting(room);
+    this.#version(room, input.expectedStateVersion);
+    if (
+      room.config.playerCount === 2 ||
+      input.targetSeat >= room.config.playerCount
+    )
+      return invalid('当前房间不允许选择该座位');
+    if (player.seat === input.targetSeat) return invalid('玩家已在该座位');
+    this.#dropExpiredSeatRequest(room);
+    if (room.seatSwapRequest)
+      throw new RoomServiceError('INVALID_INPUT', '已有换座请求正在处理');
+    const target = room.players.find(
+      (candidate) => candidate.seat === input.targetSeat,
+    );
+    if (!target) {
+      player.seat = input.targetSeat;
+      player.readiness = 'not-ready';
+    } else {
+      if (target.connection !== 'online')
+        throw new RoomServiceError('INVALID_INPUT', '对方离线，不能请求换座');
+      room.seatSwapRequest = {
+        requestId: randomUUID(),
+        requesterId: player.playerId,
+        targetPlayerId: target.playerId,
+        targetSeat: input.targetSeat,
+        expiresAt: new Date(this.#now() + 30_000).toISOString(),
+      };
+    }
+    room.stateVersion += 1;
+    this.#persist(room);
+    return this.#snapshot(room);
+  }
+
+  respondSeat(input: {
+    roomId: RoomId;
+    playerId: PlayerId;
+    reconnectToken: string;
+    seatRequestId: string;
+    accept: boolean;
+    expectedStateVersion: number;
+  }): RoomSnapshot {
+    const { room, player } = this.#authenticate(input);
+    this.#waiting(room);
+    this.#version(room, input.expectedStateVersion);
+    this.#dropExpiredSeatRequest(room);
+    const request = room.seatSwapRequest;
+    if (!request || request.requestId !== input.seatRequestId)
+      throw new RoomServiceError('INVALID_INPUT', '换座请求已失效');
+    if (request.targetPlayerId !== player.playerId)
+      throw new RoomServiceError('UNAUTHORIZED', '只有被请求者可以处理换座');
+    if (input.accept) {
+      const requester = room.players.find(
+        (candidate) => candidate.playerId === request.requesterId,
+      );
+      if (
+        !requester ||
+        requester.connection !== 'online' ||
+        player.connection !== 'online'
+      )
+        throw new RoomServiceError('INVALID_INPUT', '参与玩家已离线或离房');
+      const originalSeat = requester.seat;
+      requester.seat = player.seat;
+      player.seat = originalSeat;
+      requester.readiness = 'not-ready';
+      player.readiness = 'not-ready';
+    }
+    delete room.seatSwapRequest;
+    room.stateVersion += 1;
+    this.#persist(room);
+    return this.#snapshot(room);
+  }
+
+  expireSeatRequest(
+    roomId: RoomId,
+    requestId: string,
+  ): RoomSnapshot | undefined {
+    const room = this.#store.getById(roomId);
+    if (
+      !room ||
+      room.lifecycle !== 'waiting' ||
+      room.seatSwapRequest?.requestId !== requestId
+    )
+      return undefined;
+    delete room.seatSwapRequest;
+    room.stateVersion += 1;
+    this.#persist(room);
+    return this.#snapshot(room);
+  }
+
   startRoom(input: {
     roomId: RoomId;
     playerId: PlayerId;
@@ -317,6 +422,7 @@ export class RoomService {
   }): StartedRoom {
     const { room, player } = this.#authenticate(input);
     this.#assertStartable(room, player, input.expectedStateVersion);
+    delete room.seatSwapRequest;
     room.lifecycle = 'started';
     room.stateVersion += 1;
     this.#persist(room);
@@ -356,6 +462,11 @@ export class RoomService {
     this.#waiting(room);
     this.#version(room, input.expectedStateVersion);
     room.players = room.players.filter((candidate) => candidate !== player);
+    if (
+      room.seatSwapRequest?.requesterId === player.playerId ||
+      room.seatSwapRequest?.targetPlayerId === player.playerId
+    )
+      delete room.seatSwapRequest;
     if (room.players.length === 0) {
       if (!this.#store.delete(room.roomId, room.revision)) {
         throw new RoomServiceError('STALE_STATE', '房间状态已更新');
@@ -381,6 +492,11 @@ export class RoomService {
     this.#version(room, input.expectedStateVersion);
     if (player.connection !== 'disconnected') {
       player.connection = 'disconnected';
+      if (
+        room.seatSwapRequest?.requesterId === player.playerId ||
+        room.seatSwapRequest?.targetPlayerId === player.playerId
+      )
+        delete room.seatSwapRequest;
       room.stateVersion += 1;
       this.#persist(room);
     }
@@ -446,6 +562,13 @@ export class RoomService {
     if (room.stateVersion !== expected)
       throw new RoomServiceError('STALE_STATE', '房间状态已更新');
   }
+  #dropExpiredSeatRequest(room: StoredRoom) {
+    if (
+      room.seatSwapRequest &&
+      Date.parse(room.seatSwapRequest.expiresAt) <= this.#now()
+    )
+      delete room.seatSwapRequest;
+  }
   #persist(
     room: StoredRoom,
     conflictCode: 'STALE_STATE' | 'UNAUTHORIZED' = 'STALE_STATE',
@@ -479,6 +602,9 @@ export class RoomService {
       spectators: [],
       lifecycle: room.lifecycle,
       stateVersion: room.stateVersion,
+      seatSwapRequest: room.seatSwapRequest
+        ? { ...room.seatSwapRequest }
+        : null,
     };
   }
   #session(
