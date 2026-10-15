@@ -688,34 +688,81 @@ export default function App() {
               {Array.from({ length: room.config.playerCount }, (_, seat) => {
                 const player = room.players.find((item) => item.seat === seat);
                 return player ? (
-                  <PlayerSeat
-                    key={seat}
-                    name={player.nickname}
-                    avatar={
-                      avatarImage(player.avatarId) ? (
-                        <img src={avatarImage(player.avatarId)!} alt="" />
-                      ) : (
-                        player.nickname.slice(0, 1)
-                      )
-                    }
-                    active={player.playerId === self.playerId}
-                    online={player.connection === 'online'}
-                    role={[
-                      player.isHost ? '房主' : '',
-                      player.playerId === self.playerId ? '本人' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                    status={`${player.connection === 'online' ? '在线' : '已掉线'} · ${player.isHost ? '房主无需准备' : player.readiness === 'ready' ? '已准备' : '未准备'}`}
-                  />
+                  <div className="seat-choice" key={seat}>
+                    <PlayerSeat
+                      name={player.nickname}
+                      avatar={
+                        avatarImage(player.avatarId) ? (
+                          <img src={avatarImage(player.avatarId)!} alt="" />
+                        ) : (
+                          player.nickname.slice(0, 1)
+                        )
+                      }
+                      active={player.playerId === self.playerId}
+                      online={player.connection === 'online'}
+                      role={[
+                        player.isHost ? '房主' : '',
+                        player.playerId === self.playerId ? '本人' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                      status={`${player.connection === 'online' ? '在线' : '已掉线'} · ${player.isHost ? '房主无需准备' : player.readiness === 'ready' ? '已准备' : '未准备'}`}
+                    />
+                    {room.config.playerCount > 2 &&
+                    player.playerId !== self.playerId ? (
+                      <button
+                        type="button"
+                        disabled={pending || sessionState !== 'waiting-room'}
+                        onClick={() => {
+                          if (!connection) return;
+                          setPending(true);
+                          void connection
+                            .requestSeat(seat as 0 | 1 | 2 | 3)
+                            .catch((caught) =>
+                              setError(
+                                caught instanceof Error
+                                  ? caught.message
+                                  : fallbackError,
+                              ),
+                            )
+                            .finally(() => setPending(false));
+                        }}
+                      >
+                        请求交换
+                      </button>
+                    ) : null}
+                  </div>
                 ) : (
-                  <PlayerSeat
-                    key={seat}
-                    name={`空座 ${seat + 1}`}
-                    avatar="座"
-                    online={false}
-                    status="等待玩家入座"
-                  />
+                  <div className="seat-choice" key={seat}>
+                    <PlayerSeat
+                      name={`空座 ${seat + 1}`}
+                      avatar="座"
+                      online={false}
+                      status="等待玩家入座"
+                    />
+                    {room.config.playerCount > 2 ? (
+                      <button
+                        type="button"
+                        disabled={pending || sessionState !== 'waiting-room'}
+                        onClick={() => {
+                          if (!connection) return;
+                          setPending(true);
+                          void connection
+                            .requestSeat(seat as 0 | 1 | 2 | 3)
+                            .catch((caught) =>
+                              setError(
+                                caught instanceof Error
+                                  ? caught.message
+                                  : fallbackError,
+                              ),
+                            )
+                            .finally(() => setPending(false));
+                        }}
+                      >
+                        移到这里
+                      </button>
+                    ) : null}
+                  </div>
                 );
               })}
               <div className="table-mark">
@@ -737,6 +784,45 @@ export default function App() {
                 {room.config.allowSpectators ? '允许观战' : '禁止观战'}
               </span>
             </div>
+            {room.config.playerCount === 4 ? (
+              <p className="partner-map">对家：座位 1 ↔ 3 · 座位 2 ↔ 4</p>
+            ) : null}
+            {room.seatSwapRequest?.targetPlayerId === self.playerId ? (
+              <div className="seat-request" role="dialog" aria-label="换座请求">
+                <p>
+                  {room.players.find(
+                    (item) =>
+                      item.playerId === room.seatSwapRequest?.requesterId,
+                  )?.nickname ?? '玩家'}
+                  请求与你交换座位
+                </p>
+                <Button
+                  onClick={() =>
+                    connection &&
+                    void connection.respondSeat(
+                      room.seatSwapRequest!.requestId,
+                      true,
+                    )
+                  }
+                >
+                  同意
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    connection &&
+                    void connection.respondSeat(
+                      room.seatSwapRequest!.requestId,
+                      false,
+                    )
+                  }
+                >
+                  拒绝
+                </Button>
+              </div>
+            ) : room.seatSwapRequest?.requesterId === self.playerId ? (
+              <p className="notice">换座请求已发送，30 秒内等待对方回应。</p>
+            ) : null}
             <div className="share">
               <span>{shareUrl}</span>
               <Button

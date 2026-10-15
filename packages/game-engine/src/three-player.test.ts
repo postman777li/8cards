@@ -183,11 +183,12 @@ describe('three-player initialization and cursor', () => {
 
 describe('passes, attacks, and defenses', () => {
   it('settles only after A and C pass consecutively', () => {
-    const once = pass(initial());
+    const opened = defend(attack(initial(), 'clubs-3'), 'clubs-4');
+    const once = pass(opened);
     expect(once).toMatchObject({
-      actor: 'C',
+      actor: 'A',
       consecutivePasses: 1,
-      version: 1,
+      version: 3,
     });
     const done = pass(once);
     expect(done).toMatchObject({
@@ -195,16 +196,16 @@ describe('passes, attacks, and defenses', () => {
       defender: 'C',
       actor: 'B',
       consecutivePasses: 0,
-      version: 2,
+      version: 4,
     });
   });
 
   it('allows passing with or without legal cards and resets passes after a new attack', () => {
-    let state = pass(initial());
-    state = defend(attack(state, 'hearts-3'), 'diamonds-5');
-    expect(state).toMatchObject({ actor: 'A', consecutivePasses: 0 });
-    state = defend(attack(state, 'clubs-3'), 'diamonds-6');
-    expect(state.actor).toBe('C');
+    let state = pass(defend(attack(initial(), 'clubs-3'), 'clubs-4'));
+    state = defend(attack(state, 'spades-4'), 'diamonds-5');
+    expect(state).toMatchObject({ actor: 'C', consecutivePasses: 0 });
+    state = defend(attack(state, 'hearts-4'), 'diamonds-6');
+    expect(state.actor).toBe('A');
   });
 
   it('allows both attackers to follow table ranks and defense standard cards add ranks', () => {
@@ -246,6 +247,19 @@ describe('passes, attacks, and defenses', () => {
 });
 
 describe('taking, limits, replenishment, and next rounds', () => {
+  it('allows the shared sixth attack under a six-card snapshot and rejects the seventh', () => {
+    const ready = defend(attack(initial(), 'clubs-3'), 'clubs-4');
+    const sixth = attack(
+      { ...ready, attackCount: 5, roundAttackLimit: 6 },
+      'hearts-4',
+    );
+    expect(sixth.attackCount).toBe(6);
+    expectCode(
+      () =>
+        attack({ ...ready, attackCount: 6, roundAttackLimit: 6 }, 'hearts-4'),
+      'ATTACK_LIMIT_REACHED',
+    );
+  });
   it.each([0, 1, 2])(
     'lets the defender take after %s completed defenses',
     (defenses) => {
@@ -275,7 +289,7 @@ describe('taking, limits, replenishment, and next rounds', () => {
     );
   });
 
-  it('shares the live attack limit across both attackers', () => {
+  it('shares the fixed opening attack limit across both attackers', () => {
     let state = initial();
     for (const [a, d] of [
       ['clubs-3', 'clubs-4'],
@@ -285,7 +299,8 @@ describe('taking, limits, replenishment, and next rounds', () => {
     ] as const)
       state = defend(attack(state, a), d);
     expect(state).toMatchObject({ attackCount: 4, actor: 'A' });
-    expectCode(() => attack(state, 'hearts-5'), 'ATTACK_LIMIT_REACHED');
+    state = attack(state, 'hearts-5');
+    expect(state.attackCount).toBe(5);
   });
 
   it('replenishes in A, B, C order on defense and take, skipping full hands', () => {
@@ -391,7 +406,7 @@ describe('exchange, terminal results, and invariants', () => {
           ? attack(state, keep)
           : winner === 'B'
             ? defend(attack(state, 'clubs-3'), keep)
-            : attack(pass(state), keep);
+            : attack({ ...state, actor: 'C', attackCursor: 'C' }, keep);
       expect(result).toMatchObject({
         phase: 'finished',
         result: { outcome: 'winner', winner, reason: 'emptied-hand' },
@@ -416,7 +431,9 @@ describe('exchange, terminal results, and invariants', () => {
         ),
         discard: [...state.discard, ...moved],
       };
-      const result = loser === 'A' ? pass(state) : attack(state, 'clubs-3');
+      const actor = loser === 'A' ? 'C' : 'A';
+      const opening = actor === 'C' ? 'hearts-3' : 'clubs-3';
+      const result = attack({ ...state, actor, attackCursor: actor }, opening);
       expect(result).toMatchObject({
         phase: 'finished',
         result: { outcome: 'loser', loser, reason: 'stuck-with-jokers' },

@@ -1416,6 +1416,11 @@ html[data-reduce-motion='true'] * {
 .social-panel.open {
   display: grid;
 }
+@media (min-width: 1000px) {
+  .game-table:has(.social-panel.open) {
+    padding-right: 21.5rem;
+  }
+}
 .social-panel header {
   display: flex;
   justify-content: space-between;
@@ -1432,6 +1437,70 @@ html[data-reduce-motion='true'] * {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
+}
+
+.seat-choice {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: center;
+}
+.seat-choice > button {
+  border: 1px solid rgb(233 185 73 / 55%);
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  color: inherit;
+  background: rgb(9 48 37 / 82%);
+}
+.partner-map,
+.seat-request {
+  border: 1px solid rgb(233 185 73 / 40%);
+  border-radius: 0.75rem;
+  padding: 0.65rem;
+  background: rgb(233 185 73 / 9%);
+}
+
+.game-table.is-self-turn .self-zone {
+  outline: 3px solid var(--color-gold, #e9b949);
+  box-shadow:
+    0 0 0 5px rgb(233 185 73 / 22%),
+    0 0 28px rgb(233 185 73 / 32%);
+}
+
+.game-table.is-self-turn .turn-status {
+  font-weight: 800;
+  background: #fff1b8;
+  color: #3f2a00;
+  border: 2px solid #e9b949;
+}
+
+.social-toggle.has-unread {
+  outline: 3px solid #ffcf5a;
+  font-weight: 800;
+}
+
+.chat-toast {
+  position: fixed;
+  z-index: 30;
+  top: 5.5rem;
+  right: 1rem;
+  max-width: min(22rem, calc(100vw - 2rem));
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid rgb(255 207 90 / 70%);
+  border-radius: 0.8rem;
+  background: rgb(10 40 32 / 94%);
+  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 30%);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-table.is-self-turn .self-zone,
+  .social-toggle.has-unread,
+  .chat-toast {
+    animation: none;
+    transition: none;
+  }
 }
 .chat-messages p {
   margin: 0;

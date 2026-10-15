@@ -343,11 +343,15 @@ function clientEventType(event: ClientEvent): string {
     case 'room.leave':
     case 'room.ready':
     case 'room.start':
+    case 'room.seat.request':
+    case 'room.seat.respond':
     case 'chat.send':
     case 'spectate.join':
     case 'spectate.resume':
     case 'spectate.leave':
     case 'game.action':
+    case 'series.continue':
+    case 'series.exit':
     case 'history.get':
       return event.type;
     default:

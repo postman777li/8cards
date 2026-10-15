@@ -131,7 +131,9 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
     await host.page.getByRole('button', { name: '发送' }).click();
     await guest.page.getByRole('button', { name: /^聊天/ }).click();
     await expect(
-      guest.page.getByText('<img src=x onerror=alert(1)>纯文本'),
+      guest.page
+        .getByLabel('房间聊天')
+        .getByText('<img src=x onerror=alert(1)>纯文本'),
     ).toBeVisible();
     expect(await guest.page.locator('img[src="x"]').count()).toBe(0);
     await host.page.screenshot({
@@ -214,6 +216,74 @@ test('等待房主动离开释放座位且短码可再次加入', async ({ brows
     await expect(host.page.getByText('替补玩家')).toBeVisible();
   } finally {
     await closeAll(contexts);
+  }
+});
+
+test('三四人等待房权威移座、交换、拒绝与对家关系', async ({ browser }) => {
+  const contexts: BrowserContext[] = [];
+  await mkdir(`${evidenceRoot}/screenshots`, { recursive: true });
+  try {
+    const threeHost = await newPlayer(browser, '三人房主');
+    const threeGuest = await newPlayer(browser, '三人玩家');
+    contexts.push(threeHost.context, threeGuest.context);
+    const threeCode = await createRoom(threeHost.page, 3);
+    await joinRoom(threeGuest.page, threeCode);
+    await threeHost.page
+      .locator('.seat-choice')
+      .filter({ hasText: '空座 3' })
+      .getByRole('button', { name: '移到这里' })
+      .click();
+    await expect(threeHost.page.locator('.seat-choice').nth(2)).toContainText(
+      '三人房主',
+    );
+    await closeAll([threeHost.context, threeGuest.context]);
+
+    const host = await newPlayer(browser, '四人房主');
+    const b = await newPlayer(browser, '玩家乙');
+    const c = await newPlayer(browser, '玩家丙');
+    const d = await newPlayer(browser, '玩家丁');
+    contexts.push(host.context, b.context, c.context, d.context);
+    const code = await createRoom(host.page, 4);
+    await joinRoom(b.page, code);
+    await joinRoom(c.page, code);
+    await joinRoom(d.page, code);
+    await b.page.getByRole('button', { name: '准备', exact: true }).click();
+    await host.page
+      .locator('.seat-choice')
+      .filter({ hasText: '玩家乙' })
+      .getByRole('button', { name: '请求交换' })
+      .click();
+    await expect(
+      b.page.getByRole('dialog', { name: '换座请求' }),
+    ).toBeVisible();
+    await b.page.getByRole('button', { name: '同意' }).click();
+    await expect(host.page.locator('.seat-choice').nth(1)).toContainText(
+      '四人房主',
+    );
+    await expect(host.page.locator('.seat-choice').nth(0)).toContainText(
+      '玩家乙',
+    );
+    await expect(
+      b.page.getByRole('button', { name: '准备', exact: true }),
+    ).toBeVisible();
+
+    await host.page
+      .locator('.seat-choice')
+      .filter({ hasText: '玩家丙' })
+      .getByRole('button', { name: '请求交换' })
+      .click();
+    await c.page.getByRole('button', { name: '拒绝' }).click();
+    await expect(
+      host.page.getByText('对家：座位 1 ↔ 3 · 座位 2 ↔ 4'),
+    ).toBeVisible();
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-four-seat-swap-1440x900.png`,
+      fullPage: true,
+    });
+  } finally {
+    await closeAll(
+      contexts.filter((context) => !context.pages()[0]?.isClosed()),
+    );
   }
 });
 

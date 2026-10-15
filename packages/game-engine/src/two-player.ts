@@ -61,6 +61,7 @@ interface StateData<PlayerId extends string> {
   readonly table: readonly TablePair[];
   readonly leadRanks: ReadonlySet<StandardRank>;
   readonly attackCount: number;
+  readonly roundAttackLimit: number;
   readonly indicatorExchanged: boolean;
   readonly version: number;
 }
@@ -238,6 +239,7 @@ export function createTwoPlayerState<PlayerId extends string>(
     table: [],
     leadRanks: new Set(),
     attackCount: 0,
+    roundAttackLimit: deal.hands.get(deal.firstDefender)!.length,
     indicatorExchanged: false,
     version: 0,
     result: null,
@@ -324,6 +326,7 @@ function settle<PlayerId extends string>(
     table: [],
     leadRanks: new Set(),
     attackCount: 0,
+    roundAttackLimit: replenished.hands.get(defender)!.length,
     version: state.version + 1,
     result: null,
   });
@@ -399,8 +402,8 @@ export function applyTwoPlayerAction<PlayerId extends string>(
     if (state.table.length > 0 && !state.leadRanks.has(handCard.rank)) {
       fail('RANK_NOT_ON_TABLE', 'Attack rank has not appeared on the table');
     }
-    if (state.attackCount + 1 > state.hands.get(state.defender)!.length) {
-      fail('ATTACK_LIMIT_REACHED', 'Real-time attack limit has been reached');
+    if (state.attackCount + 1 > state.roundAttackLimit) {
+      fail('ATTACK_LIMIT_REACHED', 'Fixed round attack limit has been reached');
     }
     const removed = removeCard(state, action.playerId, action.cardId);
     return finalize({
@@ -418,6 +421,8 @@ export function applyTwoPlayerAction<PlayerId extends string>(
   if (action.type === 'pass') {
     if (activeState.phase !== 'awaiting-attack')
       fail('WRONG_PHASE', 'Passing is not expected');
+    if (activeState.table.length === 0)
+      fail('WRONG_PHASE', 'The primary attacker must open the round');
     return settle(activeState, 'defended');
   }
   if (activeState.phase !== 'awaiting-defense')

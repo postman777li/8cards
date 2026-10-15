@@ -44,10 +44,37 @@ export const gamePublicStateSchema = z.strictObject({
   loserPlayerIds: z.array(playerIdSchema).max(2).optional(),
   resultReason: z.enum(['emptied-hand', 'stuck-with-jokers']).optional(),
 });
+export const seriesParticipantSchema = z.strictObject({
+  playerId: playerIdSchema,
+  score: z.number().int(),
+  wins: z.number().int().nonnegative(),
+  losses: z.number().int().nonnegative(),
+  longestStreak: z.number().int().nonnegative(),
+  currentStreak: z.number().int().nonnegative(),
+  titles: z.array(z.enum(['嘉豪之王', '常胜将军', '快刀手', '滴水不漏'])),
+});
+export const roomSeriesSchema = z.strictObject({
+  phase: z.enum(['playing', 'continue-vote', 'series-result']),
+  roundNumber: z.number().int().positive(),
+  multiplier: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+  multiplierReason: z.enum(['normal', 'winning-streak', 'easter-egg']),
+  participants: z.array(seriesParticipantSchema).min(2).max(4),
+  continueVotes: z
+    .array(
+      z.strictObject({
+        playerId: playerIdSchema,
+        choice: z.enum(['pending', 'continue', 'stop']),
+      }),
+    )
+    .min(2)
+    .max(4),
+  finishOrder: z.array(playerIdSchema).max(4).optional(),
+});
 export const publicSnapshotSchema = z.strictObject({
   stateVersion: stateVersionSchema,
   room: roomPublicStateSchema,
   game: gamePublicStateSchema.nullable(),
+  series: roomSeriesSchema.optional(),
 });
 export const playerPrivateStateSchema = z.strictObject({
   hand: z.array(cardSchema).max(54),
@@ -73,6 +100,7 @@ export type GamePhase = z.infer<typeof gamePhaseSchema>;
 export type PlayerRole = z.infer<typeof playerRoleSchema>;
 export type Team = z.infer<typeof teamSchema>;
 export type GamePublicState = z.infer<typeof gamePublicStateSchema>;
+export type RoomSeries = z.infer<typeof roomSeriesSchema>;
 export type PublicSnapshot = z.infer<typeof publicSnapshotSchema>;
 export type PlayerPrivateState = z.infer<typeof playerPrivateStateSchema>;
 export type PlayerView = z.infer<typeof playerViewSchema>;

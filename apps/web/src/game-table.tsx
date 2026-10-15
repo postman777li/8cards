@@ -36,7 +36,10 @@ const rankOrder = {
   A: 12,
 } as const;
 
-export const sortHand = (hand: readonly Card[]): Card[] =>
+export const sortHand = (
+  hand: readonly Card[],
+  trumpSuit?: GamePublicState['trumpSuit'],
+): Card[] =>
   [...hand].sort((left, right) => {
     if (left.kind !== right.kind) return left.kind === 'standard' ? -1 : 1;
     if (left.kind === 'joker' && right.kind === 'joker')
@@ -45,11 +48,15 @@ export const sortHand = (hand: readonly Card[]): Card[] =>
         : left.rank === 'small-joker'
           ? -1
           : 1;
-    if (left.kind === 'standard' && right.kind === 'standard')
+    if (left.kind === 'standard' && right.kind === 'standard') {
+      const leftTrump = left.suit === trumpSuit ? 0 : 1;
+      const rightTrump = right.suit === trumpSuit ? 0 : 1;
       return (
+        leftTrump - rightTrump ||
         suitOrder[left.suit] - suitOrder[right.suit] ||
         rankOrder[left.rank] - rankOrder[right.rank]
       );
+    }
     return 0;
   });
 
@@ -72,6 +79,16 @@ export const pairTable = (plays: GamePublicState['table']): TablePair[] => {
 
 export const secondsRemaining = (deadline: string | null, now: number) =>
   deadline ? Math.max(0, Math.ceil((Date.parse(deadline) - now) / 1000)) : null;
+
+export const unreadMessages = (
+  messages: readonly import('@8cards/shared').ChatMessage[],
+  seenVersion: number,
+  viewerPlayerId: PlayerId,
+) =>
+  messages.filter(
+    (item) =>
+      item.chatVersion > seenVersion && item.senderPlayerId !== viewerPlayerId,
+  );
 
 const cardFace = (card: Card) =>
   card.kind === 'joker'
@@ -200,6 +217,7 @@ export function GameTable({
   onSafeReturn: () => void;
 }) {
   const game = view.public.game!;
+  const series = view.public.series;
   const [selected, setSelected] = useState<CardId>();
   const [pending, setPending] = useState(false);
   const [pendingVersion, setPendingVersion] = useState<number>();
@@ -207,6 +225,9 @@ export function GameTable({
   const [now, setNow] = useState(() => Date.now());
   const [chatOpen, setChatOpen] = useState(false);
   const [chatText, setChatText] = useState('');
+  const [unreadChat, setUnreadChat] = useState(0);
+  const [chatToast, setChatToast] =
+    useState<import('@8cards/shared').ChatMessage>();
   const [messages, setMessages] = useState<
     readonly import('@8cards/shared').ChatMessage[]
   >([]);
@@ -220,7 +241,12 @@ export function GameTable({
     stockCount: game.stockCount,
     tableCount: game.table.length,
   });
-  const hand = useMemo(() => sortHand(view.private.hand), [view.private.hand]);
+  const chatInitialized = useRef(false);
+  const seenChatVersion = useRef(0);
+  const hand = useMemo(
+    () => sortHand(view.private.hand, game.trumpSuit),
+    [view.private.hand, game.trumpSuit],
+  );
   const pairs = useMemo(() => pairTable(game.table), [game.table]);
   const legal = useMemo(
     () => new Set(view.private.legalActionTypes),
@@ -244,7 +270,8 @@ export function GameTable({
     connectionState !== 'started' ||
     !connection ||
     pending ||
-    game.phase === 'finished';
+    game.phase === 'finished' ||
+    (series !== undefined && series.phase !== 'playing');
   const unresolved = [...pairs].reverse().find((pair) => !pair.defense)?.attack
     .card.id;
 
@@ -272,14 +299,37 @@ export function GameTable({
   }, [game.turnDeadline]);
   useEffect(() => {
     if (!connection) return;
-    const offChat = connection.subscribeChat(setMessages);
+    const offChat = connection.subscribeChat((next) => {
+      setMessages(next);
+      const latest = next.at(-1)?.chatVersion ?? 0;
+      if (!chatInitialized.current) {
+        chatInitialized.current = true;
+        seenChatVersion.current = latest;
+        return;
+      }
+      const fresh = unreadMessages(
+        next,
+        seenChatVersion.current,
+        view.viewerPlayerId,
+      );
+      seenChatVersion.current = Math.max(seenChatVersion.current, latest);
+      if (fresh.length && !chatOpen) {
+        setUnreadChat((count) => count + fresh.length);
+        setChatToast(fresh.at(-1));
+      }
+    });
     const offHistory = connection.subscribeHistory(setHistory);
     if (game.phase === 'finished') void connection.history();
     return () => {
       offChat();
       offHistory();
     };
-  }, [connection, game.phase]);
+  }, [chatOpen, connection, game.phase, view.viewerPlayerId]);
+  useEffect(() => {
+    if (!chatToast) return;
+    const timer = window.setTimeout(() => setChatToast(undefined), 3500);
+    return () => window.clearTimeout(timer);
+  }, [chatToast]);
   useEffect(() => {
     const previous = previousMotion.current;
     let kind: 'draw' | 'play' | 'collect' | undefined;
@@ -332,7 +382,7 @@ export function GameTable({
 
   return (
     <section
-      className={`game-table game-table--${view.public.room.config.playerCount}`}
+      className={`game-table game-table--${view.public.room.config.playerCount} ${game.currentActorId === view.viewerPlayerId ? 'is-self-turn' : ''}`}
       aria-label={`${view.public.room.config.playerCount}人游戏牌桌`}
     >
       <header className="game-hud">
@@ -341,6 +391,11 @@ export function GameTable({
           <strong>房间 {view.public.room.code}</strong>
         </div>
         <div className="game-facts">
+          {series ? (
+            <span>
+              第 {series.roundNumber} 局 · {series.multiplier} 倍
+            </span>
+          ) : null}
           <span>主牌 {suitName(game.trumpSuit)}</span>
           <span>牌墩 {game.stockCount} 张</span>
           <span>
@@ -360,16 +415,26 @@ export function GameTable({
               : '连接中断'}
         </Badge>
         <button
-          className="social-toggle"
+          className={`social-toggle ${unreadChat ? 'has-unread' : ''}`}
           type="button"
-          onClick={() => setChatOpen((value) => !value)}
+          onClick={() => {
+            setChatOpen((value) => !value);
+            setUnreadChat(0);
+          }}
         >
-          聊天 {messages.length ? `(${messages.length})` : ''}
+          聊天 {unreadChat ? `· ${unreadChat} 条未读` : ''}
         </button>
         <p className="orientation-tip">
           当前为竖屏布局，旋转至横屏可获得更开阔的牌桌视野。
         </p>
       </header>
+
+      {chatToast ? (
+        <div className="chat-toast" role="status">
+          <strong>{chatToast.senderNickname}</strong>
+          <span>{chatToast.message}</span>
+        </div>
+      ) : null}
 
       <div className="player-ring" aria-label="其他玩家座位">
         {otherPlayers.map((player) => {
@@ -512,7 +577,11 @@ export function GameTable({
             <p className="empty-table">等待本轮首张攻牌</p>
           )}
         </div>
-        <p className="turn-status" key={`${game.currentActorId}-${game.phase}`}>
+        <p
+          className="turn-status"
+          key={`${game.currentActorId}-${game.phase}`}
+          aria-live="assertive"
+        >
           {statusText}
         </p>
       </div>
@@ -586,6 +655,20 @@ export function GameTable({
           >
             主 2 换明牌
           </Button>
+          <Button
+            variant="ghost"
+            disabled={!connection || series?.phase !== 'playing'}
+            onClick={() => {
+              if (
+                window.confirm(
+                  '主动退出将判你或你的队伍本局负，并立即结束整场。确定退出吗？',
+                )
+              )
+                void connection?.exitSeries();
+            }}
+          >
+            退出本场
+          </Button>
         </div>
         {!selected && (legal.has('play-card') || legal.has('beat-card')) && (
           <p className="action-hint">
@@ -599,26 +682,85 @@ export function GameTable({
         )}
       </div>
 
-      {game.phase === 'finished' && (
+      {(game.phase === 'finished' || series?.phase === 'series-result') && (
         <div className="table-overlay finished" role="dialog" aria-modal="true">
           <Panel>
             <p className="eyebrow">本局结束</p>
-            <h2>{result.title}</h2>
-            <p>{result.detail}</p>
+            <h2>
+              {series?.phase === 'series-result' && game.phase !== 'finished'
+                ? '房间赛已结束'
+                : result.title}
+            </h2>
+            <p>
+              {series?.phase === 'series-result' && game.phase !== 'finished'
+                ? '有玩家主动退出或掉线宽限到期，本局已按弃权计分。'
+                : result.detail}
+            </p>
             <div className="settlement-participants">
               {view.public.room.players.map((player) => (
                 <span key={player.playerId}>
                   {player.nickname} ·{' '}
-                  {game.winnerPlayerIds?.includes(player.playerId)
-                    ? '胜'
-                    : game.loserPlayerIds?.includes(player.playerId)
-                      ? '负'
-                      : view.public.room.config.playerCount === 2
+                  {series?.finishOrder?.includes(player.playerId)
+                    ? `第 ${series.finishOrder.indexOf(player.playerId) + 1} 名`
+                    : game.winnerPlayerIds?.includes(player.playerId)
+                      ? '胜'
+                      : game.loserPlayerIds?.includes(player.playerId)
                         ? '负'
-                        : '未决'}
+                        : view.public.room.config.playerCount === 2
+                          ? '负'
+                          : '未决'}
+                  {series
+                    ? ` · 总分 ${series.participants.find((item) => item.playerId === player.playerId)?.score ?? 0}`
+                    : ''}
                 </span>
               ))}
             </div>
+            {series?.phase === 'continue-vote' ? (
+              <div className="series-vote">
+                <p>
+                  已选择继续{' '}
+                  {
+                    series.continueVotes.filter(
+                      (item) => item.choice === 'continue',
+                    ).length
+                  }
+                  /{series.continueVotes.length}
+                </p>
+                <Button
+                  onClick={() =>
+                    connection && void connection.continueSeries(true)
+                  }
+                >
+                  继续下一局
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    connection && void connection.continueSeries(false)
+                  }
+                >
+                  不继续，结束本场
+                </Button>
+              </div>
+            ) : null}
+            {series?.phase === 'series-result' ? (
+              <div className="series-ranking">
+                <h3>房间赛最终排名</h3>
+                {[...series.participants]
+                  .sort((a, b) => b.score - a.score)
+                  .map((item) => (
+                    <p key={item.playerId}>
+                      {
+                        view.public.room.players.find(
+                          (player) => player.playerId === item.playerId,
+                        )?.nickname
+                      }
+                      ：{item.score} 分 · {item.wins} 胜 {item.losses} 负
+                      {item.titles.length ? ` · ${item.titles.join('、')}` : ''}
+                    </p>
+                  ))}
+              </div>
+            ) : null}
             {history && (
               <p className="history-summary">
                 当前访客累计 {history.stats.games} 局 · {history.stats.wins} 胜
@@ -633,7 +775,9 @@ export function GameTable({
                 对局已权威结束，但战绩仍在等待保存，请稍后重试查询。
               </p>
             )}
-            <Button onClick={onSafeReturn}>返回安全首页</Button>
+            {series?.phase === 'series-result' || !series ? (
+              <Button onClick={onSafeReturn}>返回安全首页</Button>
+            ) : null}
           </Panel>
         </div>
       )}

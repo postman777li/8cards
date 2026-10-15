@@ -64,4 +64,16 @@ describePostgres('PostgreSQL history store integration', () => {
       recent: [{ gameId: record.gameId }],
     });
   });
+
+  it('persists a room-series summary with an idempotent key', async () => {
+    const seriesId = `series-${randomUUID()}`;
+    const value = {
+      seriesId,
+      roomId: `room-${randomUUID()}`,
+      endedAt: '2026-10-15T00:00:00.000Z',
+      summary: { scores: [2, -1, -1] },
+    };
+    await expect(store.saveSeries(value)).resolves.toBe('inserted');
+    await expect(store.saveSeries(value)).resolves.toBe('existing');
+  });
 });

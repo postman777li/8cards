@@ -3,6 +3,18 @@ import type { GameRecord, VisitorId } from '@8cards/shared';
 import { SqliteHistoryStore } from './history-store.js';
 
 describe('SQLite history store', () => {
+  it('applies migration 2 and saves a room-series summary idempotently', async () => {
+    const store = new SqliteHistoryStore(':memory:');
+    const summary = {
+      seriesId: 'series-room-1',
+      roomId: 'room-1',
+      endedAt: '2026-10-15T00:00:00.000Z',
+      summary: { ranking: [1, 2] },
+    };
+    await expect(store.saveSeries(summary)).resolves.toBe('inserted');
+    await expect(store.saveSeries(summary)).resolves.toBe('existing');
+    await store.close();
+  });
   it('survives a database reopen and limits recent games to the newest 20', async () => {
     const directory = mkdtempSync(join(tmpdir(), '8cards-history-'));
     const filename = join(directory, 'history.sqlite');

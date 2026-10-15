@@ -50,6 +50,13 @@ export const publicSpectatorSchema = z.strictObject({
   avatarId: avatarIdSchema.optional(),
   connection: z.enum(['online', 'disconnected']),
 });
+export const seatSwapRequestSchema = z.strictObject({
+  requestId: z.string().min(1).max(128),
+  requesterId: playerIdSchema,
+  targetPlayerId: playerIdSchema,
+  targetSeat: seatIndexSchema,
+  expiresAt: z.string().datetime({ offset: true }),
+});
 export const roomPublicStateSchema = z.strictObject({
   roomId: roomIdSchema,
   name: roomNameSchema,
@@ -57,6 +64,7 @@ export const roomPublicStateSchema = z.strictObject({
   config: roomConfigSchema,
   players: z.array(publicPlayerSchema).max(4),
   spectators: z.array(publicSpectatorSchema),
+  seatSwapRequest: seatSwapRequestSchema.nullable().optional(),
 });
 export type PlayerCount = z.infer<typeof playerCountSchema>;
 export type AvatarId = z.infer<typeof avatarIdSchema>;
@@ -64,5 +72,6 @@ export type SeatIndex = z.infer<typeof seatIndexSchema>;
 export type RoomConfig = z.infer<typeof roomConfigSchema>;
 export type PublicPlayer = z.infer<typeof publicPlayerSchema>;
 export type PublicSpectator = z.infer<typeof publicSpectatorSchema>;
+export type SeatSwapRequest = z.infer<typeof seatSwapRequestSchema>;
 export type RoomPublicState = z.infer<typeof roomPublicStateSchema>;
 export type ClientIdentity = PublicPlayer | PublicSpectator;

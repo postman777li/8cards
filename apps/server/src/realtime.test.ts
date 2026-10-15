@@ -362,6 +362,34 @@ describe('real multi-client games', () => {
         (result.winnerPlayerIds?.length ?? 0) +
           (result.loserPlayerIds?.length ?? 0),
       ).toBeGreaterThan(0);
+      const series = (
+        finished!.view as {
+          public: {
+            series: {
+              phase: string;
+              finishOrder: string[];
+              participants: Array<{ playerId: string; score: number }>;
+            };
+          };
+        }
+      ).public.series;
+      expect(series.phase).toBe('continue-vote');
+      expect(series.participants).toHaveLength(count);
+      expect(series.finishOrder).toHaveLength(count);
+      expect(new Set(series.finishOrder).size).toBe(count);
+      expect(
+        series.finishOrder.every((playerId) =>
+          series.participants.some((item) => item.playerId === playerId),
+        ),
+      ).toBe(true);
+      expect(
+        series.participants.reduce((sum, item) => sum + item.score, 0),
+      ).toBe(0);
+      if (count < 4) {
+        expect(
+          series.participants.map((item) => item.score).sort((a, b) => a - b),
+        ).toEqual(count === 2 ? [-1, 1] : [-1, 0, 1]);
+      }
       const first = entries[0]!;
       expect(
         (
@@ -373,6 +401,42 @@ describe('real multi-client games', () => {
           )
         ).stats.games,
       ).toBe(1);
+      if (count === 2) {
+        const originalCode = (
+          finished!.view as { public: { room: { code: string } } }
+        ).public.room.code;
+        for (const entry of entries) {
+          const sequence = sequences.get(entry.client)!;
+          sequences.set(entry.client, sequence + 1);
+          const response = await request(entry.client, {
+            type: 'series.continue',
+            ...meta(`continue-${entry.credential.playerId}`, sequence),
+            expectedStateVersion: version,
+            continue: true,
+          });
+          expect(response.type).toBe('response.ok');
+          version = response.stateVersion as number;
+        }
+        const next = await game.all[0]!.waitFor(
+          (event) =>
+            event.type === 'state.player' && event.stateVersion === version,
+        );
+        const publicState = (
+          next.view as {
+            public: {
+              room: { code: string };
+              game: { gameId: string; phase: string };
+              series: { roundNumber: number; phase: string };
+            };
+          }
+        ).public;
+        expect(publicState.room.code).toBe(originalCode);
+        expect(publicState.series).toMatchObject({
+          roundNumber: 2,
+          phase: 'playing',
+        });
+        expect(publicState.game.phase).not.toBe('finished');
+      }
     },
   );
 
@@ -962,7 +1026,7 @@ describe('real multi-client games', () => {
     expect((jump.error as { code: string }).code).toBe('DUPLICATE_REQUEST');
   });
 
-  it('advertises and accepts an empty-table pass', async () => {
+  it('does not advertise and rejects an empty-table pass', async () => {
     const { wsUrl } = await start();
     const { all, startedVersion } = await setupGame(2, wsUrl);
     const entries = await Promise.all(
@@ -990,7 +1054,7 @@ describe('real multi-client games', () => {
           legalActionTypes: string[];
         }
       ).legalActionTypes,
-    ).toContain('pass');
+    ).not.toContain('pass');
     const passed = await request(actor.client, {
       type: 'game.action',
       ...meta('empty-pass', 3),
@@ -998,8 +1062,8 @@ describe('real multi-client games', () => {
       action: { kind: 'pass' },
     });
     expect(passed).toMatchObject({
-      type: 'response.ok',
-      stateVersion: startedVersion + 1,
+      type: 'response.error',
+      error: { code: 'ILLEGAL_ACTION' },
     });
   });
 
