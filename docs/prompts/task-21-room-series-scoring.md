@@ -26,7 +26,8 @@
 4. 不得读取、修改、删除、暂存或提交未跟踪文件 `TIMEOFF.md`，必须原样保留。
 5. 当前已知发布基线是：
    - `main` / `origin/main`：`60fcaa4`
-   - `release/first-online` / `origin/release/first-online`：`67867f0 fix: preserve full avatar framing`
+   - 任务 21 文档创建前的运行代码基线：`67867f0 fix: preserve full avatar framing`
+   - `release/first-online` 在 `67867f0` 之后可能还有仅修改文档的任务 21 提示词提交；必须以 `git fetch` 后的实际远端顶端为准
    - Render 服务跟踪 `release/first-online`
    - 公网地址：`https://eightcards-preview.onrender.com`
    - Render 区域：Singapore，免费单实例，Docker，自动部署关闭
@@ -175,13 +176,13 @@
 4. 不得合并 `main`，不得提前勾选任务 20 或任务 21。
 5. `TIMEOFF.md` 始终保持未跟踪且不得触碰。
 
-当前头像修复基线的发布步骤是：
+当前头像修复的运行代码基线是 `67867f0`；发布分支顶端可能另含本提示词的纯文档提交。若 `67867f0` 已经在 Render 显示为 `Live`，无需仅为文档提交重新部署。若尚未部署头像修复，可部署 `release/first-online` 的最新提交，因为它仍完整包含 `67867f0` 的运行代码。操作步骤是：
 
 1. 打开 Render Dashboard，进入 `8cards-preview`。
 2. 打开 `Deploys`。
 3. 点击 `Manual Deploy`。
 4. 选择 `Deploy latest commit`。
-5. 当前基线应看到 `67867f0` 变为 `Live`。
+5. 等待页面所显示的 `release/first-online` 最新提交变为 `Live`，并核对其提交历史确实包含 `67867f0`；不得部署更早的 `17e1106`。
 6. 打开 `https://eightcards-preview.onrender.com`，按 `Ctrl + F5` 强制刷新。
 
 但任务 21 完成并合并后，最终发布 SHA 必然不再是 `67867f0`。届时必须把“任务 21 合并到 `release/first-online` 后产生的最新 SHA”明确告诉用户，并按相同 Render 流程发布该最新 SHA，不能错误地让用户再次部署旧的 `67867f0`。
