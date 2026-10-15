@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 
 import {
   expect,
@@ -7,6 +7,8 @@ import {
   type BrowserContext,
   type Page,
 } from '@playwright/test';
+import { compareCards } from '../../packages/game-engine/src/index.ts';
+import type { Card } from '../../packages/shared/src/index.ts';
 
 const evidenceRoot =
   process.env.EIGHTCARDS_EVIDENCE ?? 'C:/Users/12571/8cards-task19-evidence';
@@ -50,6 +52,120 @@ async function joinRoom(page: Page, code: string) {
 
 async function closeAll(contexts: BrowserContext[]) {
   await Promise.all(contexts.map((context) => context.close()));
+}
+
+function latestPlayerVersion(frames: string[]) {
+  for (const frame of [...frames].reverse()) {
+    try {
+      const event = JSON.parse(frame) as {
+        type?: string;
+        stateVersion?: number;
+      };
+      if (event.type === 'state.player' && event.stateVersion !== undefined)
+        return event.stateVersion;
+    } catch {
+      // Browser DevTools also reports non-JSON transport frames.
+    }
+  }
+  return -1;
+}
+
+function latestPlayerState(frames: string[]) {
+  for (const frame of [...frames].reverse()) {
+    try {
+      const event = JSON.parse(frame) as {
+        type?: string;
+        stateVersion?: number;
+        view?: {
+          public: {
+            game: {
+              trumpSuit: 'spades' | 'hearts' | 'clubs' | 'diamonds';
+              table: Array<{ purpose: string; card: Card }>;
+            };
+          };
+          private: { hand: Card[]; legalActionTypes: string[] };
+        };
+      };
+      if (event.type === 'state.player' && event.view) return event;
+    } catch {
+      // Browser DevTools also reports non-JSON transport frames.
+    }
+  }
+  return undefined;
+}
+
+const cardName = (card: Card) =>
+  card.kind === 'joker'
+    ? `★ ${card.rank === 'small-joker' ? '小王' : '大王'}`
+    : `${{ spades: '♠', hearts: '♥', clubs: '♣', diamonds: '♦' }[card.suit]} ${card.rank}`;
+
+async function playUntilVote(
+  players: Array<Awaited<ReturnType<typeof newPlayer>>>,
+) {
+  for (let step = 0; step < 400; step += 1) {
+    if (
+      await players[0]!.page
+        .getByRole('button', { name: '继续下一局' })
+        .isVisible()
+        .catch(() => false)
+    )
+      return step;
+    let progressed = false;
+    for (const player of players) {
+      const before = latestPlayerVersion(player.frames);
+      const state = latestPlayerState(player.frames);
+      const legal = new Set(state?.view?.private.legalActionTypes ?? []);
+      const collect = player.page.getByRole('button', { name: '收牌' });
+      const pass = player.page.getByRole('button', { name: '过牌' });
+      let card: Card | undefined;
+      if (legal.has('beat-card') && state?.view) {
+        const target = [...state.view.public.game.table]
+          .reverse()
+          .find((play) => play.purpose === 'attack')?.card;
+        card = target
+          ? state.view.private.hand.find(
+              (candidate) =>
+                compareCards(
+                  candidate,
+                  target,
+                  state.view!.public.game.trumpSuit,
+                ) === 1 ||
+                (candidate.kind === 'joker' && target.kind !== 'joker'),
+            )
+          : undefined;
+      } else if (legal.has('play-card')) {
+        card = state?.view?.private.hand.find(
+          (candidate) => candidate.kind === 'standard',
+        );
+      }
+      if (card) {
+        await player.page
+          .getByLabel('本人手牌')
+          .getByRole('button', { name: cardName(card) })
+          .first()
+          .click();
+        const action = player.page
+          .locator('.action-bar button')
+          .filter({ hasText: /出牌|压牌/ });
+        if (!(await action.isEnabled({ timeout: 500 }).catch(() => false)))
+          continue;
+        await action.click({ timeout: 500 });
+      } else if (await collect.isEnabled().catch(() => false))
+        await collect.click();
+      else if (await pass.isEnabled().catch(() => false)) await pass.click();
+      else continue;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (latestPlayerVersion(player.frames) > before) break;
+        await player.page.waitForTimeout(10);
+      }
+      if (latestPlayerVersion(player.frames) > before) {
+        progressed = true;
+        break;
+      }
+    }
+    if (!progressed) await players[0]!.page.waitForTimeout(25);
+  }
+  throw new Error('连续房间赛未在 400 步内进入继续投票');
 }
 
 test('大厅、分享链接、准备、开局、聊天、观战与三种响应式视口', async ({
@@ -344,5 +460,54 @@ test('玩家刷新页面后恢复正在进行的对局', async ({ browser }) => 
     await expect(guest.page.getByText('正在恢复对局…')).not.toBeVisible();
   } finally {
     await closeAll(contexts);
+  }
+});
+
+test('真实浏览器完成两局连续房间赛、倍率显示与最终结算', async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const players: Array<Awaited<ReturnType<typeof newPlayer>>> = [];
+  try {
+    const host = await newPlayer(browser, '连续赛房主');
+    const guest = await newPlayer(browser, '连续赛玩家');
+    players.push(host, guest);
+    const code = await createRoom(host.page, 2);
+    await joinRoom(guest.page, code);
+    await guest.page.getByRole('button', { name: '准备', exact: true }).click();
+    await host.page.getByRole('button', { name: '开始游戏' }).click();
+
+    const firstSteps = await playUntilVote(players);
+    await expect(host.page.getByText(/第 1 局 · [1-4] 倍/)).toBeVisible();
+    await expect(host.page.getByText(/总分/).first()).toBeVisible();
+    await host.page.getByRole('button', { name: '继续下一局' }).click();
+    await guest.page.getByRole('button', { name: '继续下一局' }).click();
+    await expect(host.page.getByText(/第 2 局 · [1-4] 倍/)).toBeVisible();
+
+    const secondSteps = await playUntilVote(players);
+    await guest.page.getByRole('button', { name: '不继续，结束本场' }).click();
+    await expect(host.page.getByText('房间赛最终排名')).toBeVisible();
+    await expect(host.page.getByText(/总分/).first()).toBeVisible();
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-two-round-series-result-1440x900.png`,
+      fullPage: true,
+    });
+    await writeFile(
+      `${evidenceRoot}/two-round-series.json`,
+      JSON.stringify(
+        {
+          roomCode: code,
+          roundsCompleted: 2,
+          firstRoundActions: firstSteps,
+          secondRoundActions: secondSteps,
+          authoritativeSettlementsObserved: 2,
+          finalSeriesResultObserved: true,
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    await closeAll(players.map((player) => player.context));
   }
 });

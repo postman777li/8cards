@@ -190,6 +190,32 @@ describe('RoomService creation and joining', () => {
 });
 
 describe('RoomService authoritative seat changes', () => {
+  it('expires an exact pending request as a versioned room mutation', () => {
+    const { service } = factory();
+    const host = service.createRoom({
+      nickname: 'A',
+      roomName: '换座',
+      config: config(3),
+    });
+    const guest = service.joinRoom({ roomCode: host.room.code, nickname: 'B' });
+    const requested = service.requestSeat({
+      roomId: host.room.roomId,
+      playerId: host.playerId,
+      reconnectToken: host.reconnectToken,
+      targetSeat: 1,
+      expectedStateVersion: guest.room.stateVersion,
+    });
+    const expired = service.expireSeatRequest(
+      host.room.roomId,
+      requested.seatSwapRequest!.requestId,
+    );
+    expect(expired?.seatSwapRequest).toBeNull();
+    expect(expired?.stateVersion).toBe(requested.stateVersion + 1);
+    expect(
+      service.expireSeatRequest(host.room.roomId, 'already-expired'),
+    ).toBeUndefined();
+  });
+
   it('moves to an empty seat and swaps only after consent while preserving host identity', () => {
     const { service } = factory();
     const host = service.createRoom({

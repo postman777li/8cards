@@ -397,6 +397,23 @@ export class RoomService {
     return this.#snapshot(room);
   }
 
+  expireSeatRequest(
+    roomId: RoomId,
+    requestId: string,
+  ): RoomSnapshot | undefined {
+    const room = this.#store.getById(roomId);
+    if (
+      !room ||
+      room.lifecycle !== 'waiting' ||
+      room.seatSwapRequest?.requestId !== requestId
+    )
+      return undefined;
+    delete room.seatSwapRequest;
+    room.stateVersion += 1;
+    this.#persist(room);
+    return this.#snapshot(room);
+  }
+
   startRoom(input: {
     roomId: RoomId;
     playerId: PlayerId;

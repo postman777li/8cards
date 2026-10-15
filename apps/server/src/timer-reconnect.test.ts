@@ -379,6 +379,63 @@ describe('authoritative turn timers', () => {
 });
 
 describe('disconnect and session restoration', () => {
+  it('automatically expires and broadcasts a pending seat swap after 30 seconds', async () => {
+    const clock = new FakeClock();
+    const server = createApp({ clock });
+    servers.add(server);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`;
+    const host = await Client.connect(url);
+    const guest = await Client.connect(url);
+    clients.add(host);
+    clients.add(guest);
+    await send(host, {
+      type: 'room.create',
+      ...meta('seat-create', 1),
+      nickname: 'A',
+      roomName: '换座计时',
+      config: {
+        playerCount: 3,
+        allowSpectators: true,
+        allowChat: true,
+        turnTimeoutSeconds: 20,
+      },
+    });
+    const created = await state(host, 0);
+    const joined = await send(guest, {
+      type: 'room.join',
+      ...meta('seat-join', 1),
+      nickname: 'B',
+      roomCode: publicOf(created).room.code,
+    });
+    expect(joined.stateVersion).toBe(1);
+    await send(host, {
+      type: 'room.seat.request',
+      ...meta('seat-request', 2),
+      expectedStateVersion: 1,
+      targetSeat: 1,
+    });
+    const pending = await state(guest, 2);
+    expect(
+      (pending.view as { public: { room: { seatSwapRequest: unknown } } })
+        .public.room.seatSwapRequest,
+    ).not.toBeNull();
+
+    clock.advance(29_999);
+    expect(
+      guest.events.some(
+        (event) => event.type === 'state.player' && event.stateVersion === 3,
+      ),
+    ).toBe(false);
+    clock.advance(1);
+    const expired = await state(guest, 3);
+    expect(
+      (expired.view as { public: { room: { seatSwapRequest: unknown } } })
+        .public.room.seatSwapRequest,
+    ).toBeNull();
+  });
+
   it('forfeits the series only after the three-minute reconnect grace expires', async () => {
     const game = await setup(2);
     const disconnectedPlayerId = game.credentials[1]!.playerId as string;

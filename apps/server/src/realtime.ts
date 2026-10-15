@@ -57,6 +57,7 @@ import {
   chooseRoundMultiplier,
   finalizeSeries,
   scoreRankedRound,
+  resolveFourPlayerTeamOutcome,
   scoreSeriesRound,
 } from './series.js';
 
@@ -122,6 +123,7 @@ interface RealtimeRoom {
   fastestWinners: Set<PlayerId>;
   roundFinishOrder: PlayerId[];
   originalTeams: readonly (readonly PlayerId[])[];
+  seatSwapExpiryHandle?: unknown;
 }
 
 export interface RealtimeClock {
@@ -791,6 +793,22 @@ export class RealtimeService {
         expectedStateVersion: event.expectedStateVersion,
       });
       runtime.stateVersion = runtime.snapshot.stateVersion;
+      if (runtime.seatSwapExpiryHandle !== undefined)
+        this.#clock.cancel(runtime.seatSwapExpiryHandle);
+      const request = runtime.snapshot.seatSwapRequest;
+      runtime.seatSwapExpiryHandle = request
+        ? this.#clock.schedule(30_000, () => {
+            const snapshot = this.#roomService.expireSeatRequest(
+              runtime.snapshot.roomId,
+              request.requestId,
+            );
+            delete runtime.seatSwapExpiryHandle;
+            if (!snapshot) return;
+            runtime.snapshot = snapshot;
+            runtime.stateVersion = snapshot.stateVersion;
+            this.#broadcast(runtime);
+          })
+        : undefined;
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
     if (event.type === 'room.seat.respond') {
@@ -801,6 +819,10 @@ export class RealtimeService {
         expectedStateVersion: event.expectedStateVersion,
       });
       runtime.stateVersion = runtime.snapshot.stateVersion;
+      if (runtime.seatSwapExpiryHandle !== undefined) {
+        this.#clock.cancel(runtime.seatSwapExpiryHandle);
+        delete runtime.seatSwapExpiryHandle;
+      }
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
     if (event.type === 'room.leave') {
@@ -1130,14 +1152,14 @@ export class RealtimeService {
       return;
     const losers = new Set<PlayerId>();
     const winners = new Set<PlayerId>();
-    if (room.authority.mode === 4) {
-      const losingTeam = room.authority.state.teams.find((team) =>
-        team.members.includes(playerId),
+    if (room.snapshot.config.playerCount === 4) {
+      const outcome = resolveFourPlayerTeamOutcome(
+        room.series.participants.map((item) => item.playerId),
+        room.originalTeams,
+        new Set([playerId]),
       );
-      for (const member of losingTeam?.members ?? [playerId])
-        losers.add(member);
-      for (const player of room.authority.state.players)
-        if (!losers.has(player)) winners.add(player);
+      for (const member of outcome.losers) losers.add(member);
+      for (const member of outcome.winners) winners.add(member);
     } else {
       losers.add(playerId);
       for (const player of room.authority.state.players)
@@ -1380,6 +1402,21 @@ export class RealtimeService {
     ).public.game!;
     const explicitWinners = new Set(game.winnerPlayerIds ?? []);
     const losers = new Set(game.loserPlayerIds ?? []);
+    if (
+      room.snapshot.config.playerCount === 4 &&
+      room.roundFinishOrder.length > 0 &&
+      losers.size > 0
+    ) {
+      const outcome = resolveFourPlayerTeamOutcome(
+        room.series.participants.map((item) => item.playerId),
+        room.originalTeams,
+        losers,
+      );
+      losers.clear();
+      explicitWinners.clear();
+      for (const player of outcome.losers) losers.add(player);
+      for (const player of outcome.winners) explicitWinners.add(player);
+    }
     if (room.authority.mode === 2 && explicitWinners.size === 1) {
       for (const item of game.players)
         if (!explicitWinners.has(item.playerId)) losers.add(item.playerId);

@@ -82,13 +82,20 @@ export function scoreRankedRound(
       delta.set(player, (delta.get(player) ?? 0) + score);
     });
   }
+  const firstTeam =
+    playerCount === 4
+      ? (teams?.find((team) => team.includes(finishOrder[0]!)) ?? [
+          finishOrder[0]!,
+        ])
+      : [finishOrder[0]!];
   return {
     ...series,
     phase: 'continue-vote',
     participants: series.participants.map((item) => {
       const placement = finishOrder.indexOf(item.playerId);
-      const won = placement === 0;
-      const lost = placement === finishOrder.length - 1;
+      const won = firstTeam.includes(item.playerId);
+      const lost =
+        playerCount === 4 ? !won : placement === finishOrder.length - 1;
       const currentStreak = won ? item.currentStreak + 1 : 0;
       return {
         ...item,
@@ -104,6 +111,21 @@ export function scoreRankedRound(
       choice: 'pending',
     })),
   };
+}
+
+export function resolveFourPlayerTeamOutcome(
+  participantIds: readonly PlayerId[],
+  teams: readonly (readonly PlayerId[])[],
+  losingPlayers: ReadonlySet<PlayerId>,
+) {
+  const losingTeam = teams.find((team) =>
+    team.some((player) => losingPlayers.has(player)),
+  );
+  const losers = new Set<PlayerId>(losingTeam ?? losingPlayers);
+  const winners = new Set(
+    participantIds.filter((playerId) => !losers.has(playerId)),
+  );
+  return { winners, losers };
 }
 
 export function finalizeSeries(series: RoomSeries): RoomSeries {

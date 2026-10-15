@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   chooseRoundMultiplier,
   finalizeSeries,
+  resolveFourPlayerTeamOutcome,
   scoreRankedRound,
   scoreSeriesRound,
 } from './series.js';
@@ -79,6 +80,66 @@ describe('room series scoring and multipliers', () => {
     );
     expect(four.participants.map((item) => item.score)).toEqual([1, 0, 1, -2]);
     expect(four.participants.reduce((sum, item) => sum + item.score, 0)).toBe(
+      0,
+    );
+    expect(
+      four.participants.map((item) => [item.playerId, item.currentStreak]),
+    ).toEqual([
+      ['A', 1],
+      ['B', 0],
+      ['C', 1],
+      ['D', 0],
+    ]);
+  });
+
+  it('keeps a four-player team streak when alternating which teammate finishes first', () => {
+    const teams = [
+      [ids[0]!, ids[2]!],
+      [ids[1]!, ids[3]!],
+    ];
+    const first = scoreRankedRound(
+      series(4),
+      4,
+      ['A', 'B', 'C', 'D'] as PlayerId[],
+      teams,
+    );
+    const second = scoreRankedRound(
+      { ...first, phase: 'playing', roundNumber: 2 },
+      4,
+      ['C', 'D', 'A', 'B'] as PlayerId[],
+      teams,
+    );
+    expect(
+      second.participants.map((item) => [item.playerId, item.currentStreak]),
+    ).toEqual([
+      ['A', 2],
+      ['B', 0],
+      ['C', 2],
+      ['D', 0],
+    ]);
+  });
+
+  it('restores the original four-player teams after authority drops to three or two players', () => {
+    const outcome = resolveFourPlayerTeamOutcome(
+      ids,
+      [
+        [ids[0]!, ids[2]!],
+        [ids[1]!, ids[3]!],
+      ],
+      new Set([ids[2]!]),
+    );
+    expect([...outcome.losers]).toEqual(['A', 'C']);
+    expect([...outcome.winners]).toEqual(['B', 'D']);
+    const scored = scoreSeriesRound(
+      series(4),
+      4,
+      outcome.winners,
+      outcome.losers,
+    );
+    expect(scored.participants.map((item) => item.score)).toEqual([
+      -1, 1, -1, 1,
+    ]);
+    expect(scored.participants.reduce((sum, item) => sum + item.score, 0)).toBe(
       0,
     );
   });

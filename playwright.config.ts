@@ -15,6 +15,7 @@ export default defineConfig({
   reporter: [
     ['list'],
     ['html', { outputFolder: `${evidenceRoot}/report`, open: 'never' }],
+    ['json', { outputFile: `${evidenceRoot}/playwright-results.json` }],
   ],
   use: {
     baseURL: 'http://127.0.0.1:4173',
