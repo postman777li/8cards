@@ -3,6 +3,7 @@ import { Badge, Button, Panel, PlayerSeat, PlayingCard } from '@8cards/ui';
 import type { Card, ChatMessage, SpectatorView } from '@8cards/shared';
 import type { SpectatorConnection, VisitorHistory } from './realtime-client.js';
 import { avatarImage } from './avatars.js';
+import { QUICK_PHRASES, REACTIONS, reactionLabel } from './experience.js';
 
 const face = (card: Card) =>
   card.kind === 'joker'
@@ -132,6 +133,30 @@ export function SpectatorTable({
               <b>{item.senderNickname}</b>
               <span>{item.message}</span>
             </p>
+          ))}
+        </div>
+        <div className="quick-phrases" aria-label="观战快捷语">
+          {QUICK_PHRASES.map((phrase) => (
+            <button
+              type="button"
+              key={phrase}
+              onClick={() => void connection.chat(phrase)}
+            >
+              {phrase}
+            </button>
+          ))}
+        </div>
+        <div className="reaction-picker" aria-label="观战表情互动">
+          {REACTIONS.map((item) => (
+            <button
+              type="button"
+              key={item}
+              aria-label={reactionLabel[item]}
+              onClick={() => void connection.reaction(item)}
+            >
+              <i className={`reaction-icon reaction-icon--${item}`} />
+              <span>{reactionLabel[item]}</span>
+            </button>
           ))}
         </div>
         <form onSubmit={submit}>

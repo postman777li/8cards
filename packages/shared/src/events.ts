@@ -87,6 +87,20 @@ const chatEventSchema = z.strictObject({
   ...versionedRequestMeta,
   message: z.string().trim().min(1).max(300),
 });
+export const reactionIdSchema = z.enum([
+  'like',
+  'clap',
+  'laugh',
+  'think',
+  'wow',
+  'cheer',
+  'facepalm',
+]);
+const reactionEventSchema = z.strictObject({
+  type: z.literal('reaction.send'),
+  ...versionedRequestMeta,
+  reactionId: reactionIdSchema,
+});
 const spectateJoinEventSchema = z.strictObject({
   type: z.literal('spectate.join'),
   ...requestMeta,
@@ -146,6 +160,7 @@ export const clientEventSchema = z.discriminatedUnion('type', [
   seatRequestEventSchema,
   seatRespondEventSchema,
   chatEventSchema,
+  reactionEventSchema,
   spectateJoinEventSchema,
   spectateResumeEventSchema,
   spectateLeaveEventSchema,
@@ -265,9 +280,20 @@ const publicChatEventSchema = z.strictObject({
   sentAt: timestampSchema,
   chatVersion: z.number().int().positive(),
 });
+const publicReactionEventSchema = z.strictObject({
+  type: z.literal('reaction.show'),
+  protocolVersion: protocolVersionSchema,
+  stateVersion: stateVersionSchema,
+  reactionEventId: z.string().trim().min(1).max(128),
+  reactionId: reactionIdSchema,
+  senderPlayerId: playerIdSchema.optional(),
+  senderSpectatorId: spectatorIdSchema.optional(),
+  sentAt: timestampSchema,
+});
 export const publicServerEventSchema = z.discriminatedUnion('type', [
   publicStateEventSchema,
   publicChatEventSchema,
+  publicReactionEventSchema,
 ]);
 export const serverEventSchema = z.union([
   individualServerEventSchema,
@@ -279,6 +305,8 @@ export type IndividualServerEvent = z.infer<typeof individualServerEventSchema>;
 export type PublicServerEvent = z.infer<typeof publicServerEventSchema>;
 export type ServerEvent = z.infer<typeof serverEventSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type ReactionId = z.infer<typeof reactionIdSchema>;
+export type ReactionEvent = z.infer<typeof publicReactionEventSchema>;
 export type GameRecord = z.infer<typeof gameRecordSchema>;
 export const parseClientEvent = (input: unknown): ClientEvent =>
   clientEventSchema.parse(input);

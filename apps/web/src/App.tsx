@@ -607,26 +607,37 @@ export default function App() {
           </button>
           <div className="heading">
             <p className="eyebrow">本地偏好</p>
-            <h1>基础设置</h1>
-            <p>只保存在当前浏览器。尚未接入音频素材，不会伪装播放。</p>
+            <h1>体验设置</h1>
+            <p>偏好只保存在当前浏览器，音效会在首次操作后安全启用。</p>
           </div>
           <Panel className="form-card settings">
             <Toggle
               label="操作音效"
-              description="保存开关，供后续功能使用"
+              description="牌桌动作、倒计时和社交提示的原创合成短音"
               checked={settings.soundEffects}
               onChange={(soundEffects) =>
                 updateSettings({ ...settings, soundEffects })
               }
             />
-            <Toggle
-              label="背景音乐"
-              description="默认关闭，不会自动播放"
-              checked={settings.backgroundMusic}
-              onChange={(backgroundMusic) =>
-                updateSettings({ ...settings, backgroundMusic })
-              }
-            />
+            <label className="volume-setting">
+              <span>
+                <strong>音效音量</strong>
+                <small>{Math.round(settings.soundVolume * 100)}%</small>
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={settings.soundVolume}
+                onChange={(event) =>
+                  updateSettings({
+                    ...settings,
+                    soundVolume: Number(event.target.value),
+                  })
+                }
+              />
+            </label>
             <Toggle
               label="减弱动画"
               description="减少页面装饰动效"
@@ -644,6 +655,10 @@ export default function App() {
           view={view}
           connection={connection}
           connectionState={sessionState}
+          audioPreferences={{
+            enabled: settings.soundEffects,
+            volume: settings.soundVolume,
+          }}
           onSafeReturn={returnHomePreservingSession}
         />
       )}

@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import type {
   Card,
   CardId,
@@ -10,6 +16,14 @@ import type {
 import { Badge, Button, Panel, PlayerSeat, PlayingCard } from '@8cards/ui';
 import type { LobbyConnection } from './realtime-client.js';
 import { avatarImage } from './avatars.js';
+import { GameAudio, type AudioPreferences } from './audio-system.js';
+import {
+  QUICK_PHRASES,
+  REACTIONS,
+  rankParticipants,
+  reactionLabel,
+  describeDraws,
+} from './experience.js';
 
 export type TableConnectionState =
   | 'connecting'
@@ -210,11 +224,13 @@ export function GameTable({
   connection,
   connectionState,
   onSafeReturn,
+  audioPreferences = { enabled: false, volume: 0.45 },
 }: {
   view: PlayerView;
   connection: LobbyConnection | undefined;
   connectionState: TableConnectionState;
   onSafeReturn: () => void;
+  audioPreferences?: AudioPreferences;
 }) {
   const game = view.public.game!;
   const series = view.public.series;
@@ -231,6 +247,13 @@ export function GameTable({
   const [messages, setMessages] = useState<
     readonly import('@8cards/shared').ChatMessage[]
   >([]);
+  const [reaction, setReaction] =
+    useState<import('@8cards/shared').ReactionEvent>();
+  const audio = useRef(new GameAudio(audioPreferences));
+  const [drawMotions, setDrawMotions] = useState<
+    ReturnType<typeof describeDraws>
+  >([]);
+  const previousGame = useRef(game);
   const [history, setHistory] =
     useState<import('./realtime-client.js').VisitorHistory>();
   const [motionCue, setMotionCue] = useState<{
@@ -241,6 +264,16 @@ export function GameTable({
     stockCount: game.stockCount,
     tableCount: game.table.length,
   });
+  useEffect(() => {
+    audio.current.setPreferences(audioPreferences);
+    const unlock = () => void audio.current.unlock();
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, [audioPreferences]);
   const chatInitialized = useRef(false);
   const seenChatVersion = useRef(0);
   const hand = useMemo(
@@ -316,13 +349,19 @@ export function GameTable({
       if (fresh.length && !chatOpen) {
         setUnreadChat((count) => count + fresh.length);
         setChatToast(fresh.at(-1));
+        audio.current.play('social', `chat:${fresh.at(-1)!.messageId}`);
       }
     });
     const offHistory = connection.subscribeHistory(setHistory);
+    const offReactions = connection.subscribeReactions((next) => {
+      setReaction(next);
+      audio.current.play('social', next.reactionEventId);
+    });
     if (game.phase === 'finished') void connection.history();
     return () => {
       offChat();
       offHistory();
+      offReactions();
     };
   }, [chatOpen, connection, game.phase, view.viewerPlayerId]);
   useEffect(() => {
@@ -331,7 +370,16 @@ export function GameTable({
     return () => window.clearTimeout(timer);
   }, [chatToast]);
   useEffect(() => {
+    if (!reaction) return;
+    const timer = window.setTimeout(() => setReaction(undefined), 2400);
+    return () => window.clearTimeout(timer);
+  }, [reaction]);
+  useEffect(() => {
     const previous = previousMotion.current;
+    const priorGame = previousGame.current;
+    const draws = describeDraws(priorGame, game, view.viewerPlayerId);
+    previousGame.current = game;
+    setDrawMotions(draws);
     let kind: 'draw' | 'play' | 'collect' | undefined;
     if (game.table.length === 0 && previous.tableCount > 0) kind = 'collect';
     else if (game.table.length > previous.tableCount) kind = 'play';
@@ -340,7 +388,28 @@ export function GameTable({
       stockCount: game.stockCount,
       tableCount: game.table.length,
     };
-    if (kind) setMotionCue({ kind, version: view.public.stateVersion });
+    if (kind) {
+      setMotionCue({ kind, version: view.public.stateVersion });
+      const defenderBefore = priorGame.players.find(
+        (item) => item.role === 'defender',
+      );
+      const defenderAfter = defenderBefore
+        ? game.players.find((item) => item.playerId === defenderBefore.playerId)
+        : undefined;
+      const cue =
+        kind === 'play'
+          ? game.table.at(-1)?.purpose === 'defense'
+            ? 'beat'
+            : 'play'
+          : kind === 'collect'
+            ? defenderBefore &&
+              defenderAfter &&
+              defenderAfter.handCount > defenderBefore.handCount
+              ? 'collect'
+              : 'pass'
+            : 'draw';
+      audio.current.play(cue, String(view.public.stateVersion));
+    }
   }, [game.stockCount, game.table.length, view.public.stateVersion]);
 
   const submit = async (action: GameAction) => {
@@ -379,6 +448,43 @@ export function GameTable({
           ? '你可随时收牌'
           : `等待${game.players.find((player) => player.playerId === game.currentActorId)?.role === 'defender' ? '防守方' : '进攻方'}操作`;
   const result = resultCopy(game, view.viewerPlayerId);
+  useEffect(() => {
+    if (
+      game.currentActorId === view.viewerPlayerId &&
+      game.phase !== 'finished'
+    )
+      audio.current.play(
+        'your-turn',
+        `${view.public.stateVersion}:${game.currentActorId}`,
+      );
+  }, [
+    game.currentActorId,
+    game.phase,
+    view.public.stateVersion,
+    view.viewerPlayerId,
+  ]);
+  useEffect(() => {
+    if (remaining !== null && remaining <= 5 && remaining > 0)
+      audio.current.play('countdown', `${game.turnDeadline}:${remaining}`);
+  }, [game.turnDeadline, remaining]);
+  useEffect(() => {
+    if (series?.phase === 'series-result') {
+      audio.current.play('ranking', `series:${view.public.stateVersion}`);
+      return;
+    }
+    if (game.phase !== 'finished') return;
+    const won = game.winnerPlayerIds?.includes(view.viewerPlayerId) ?? false;
+    audio.current.play(
+      won ? 'win' : 'lose',
+      `finish:${view.public.stateVersion}`,
+    );
+  }, [
+    game.phase,
+    game.winnerPlayerIds,
+    series?.phase,
+    view.public.stateVersion,
+    view.viewerPlayerId,
+  ]);
 
   return (
     <section
@@ -433,6 +539,15 @@ export function GameTable({
         <div className="chat-toast" role="status">
           <strong>{chatToast.senderNickname}</strong>
           <span>{chatToast.message}</span>
+        </div>
+      ) : null}
+      {reaction ? (
+        <div
+          className={`reaction-burst reaction-burst--${reaction.reactionId}`}
+          role="status"
+        >
+          <i aria-hidden="true" />
+          <strong>{reactionLabel[reaction.reactionId]}</strong>
         </div>
       ) : null}
 
@@ -496,6 +611,33 @@ export function GameTable({
             <small>还没有消息，打个招呼吧。</small>
           )}
         </div>
+        <div className="quick-phrases" aria-label="快捷语">
+          {QUICK_PHRASES.map((phrase) => (
+            <button
+              type="button"
+              key={phrase}
+              onClick={() => void connection?.chat(phrase)}
+            >
+              {phrase}
+            </button>
+          ))}
+        </div>
+        <div className="reaction-picker" aria-label="原创表情互动">
+          {REACTIONS.map((item) => (
+            <button
+              type="button"
+              key={item}
+              aria-label={reactionLabel[item]}
+              onClick={() => void connection?.reaction(item)}
+            >
+              <i
+                className={`reaction-icon reaction-icon--${item}`}
+                aria-hidden="true"
+              />
+              <span>{reactionLabel[item]}</span>
+            </button>
+          ))}
+        </div>
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -525,6 +667,15 @@ export function GameTable({
       </aside>
 
       <div className="center-table">
+        {drawMotions.map((draw) => (
+          <i
+            className={`draw-flight draw-flight--${seatPositions.get(draw.playerId) ?? 'self'}`}
+            key={`${view.public.stateVersion}-${draw.playerId}`}
+            aria-label={`${draw.privateCards ? '你' : '其他玩家'}补牌 ${draw.count} 张`}
+          >
+            {draw.count}
+          </i>
+        ))}
         {motionCue ? (
           <div
             className={`table-motion table-motion--${motionCue.kind}`}
@@ -541,6 +692,27 @@ export function GameTable({
         >
           <strong>{remaining === 0 ? '…' : (remaining ?? '—')}</strong>
           <span>{remaining === 0 ? '等待服务器处理' : '秒'}</span>
+        </div>
+        <div
+          className={`stock-stack ${game.stockCount === 0 ? 'is-empty' : ''}`}
+          aria-label={`牌墩剩余 ${game.stockCount} 张`}
+        >
+          <div
+            className="stock-cards"
+            style={
+              {
+                '--stock-depth': Math.min(6, Math.ceil(game.stockCount / 5)),
+              } as CSSProperties
+            }
+          >
+            <i />
+            <i />
+            <i />
+            <b>八</b>
+          </div>
+          <span>
+            牌墩 <strong>{game.stockCount}</strong>
+          </span>
         </div>
         <div className="indicator-card">
           <span>公开明牌</span>
@@ -608,7 +780,9 @@ export function GameTable({
                 tabIndex={blocked ? -1 : 0}
                 aria-pressed={isSelected}
                 onClick={() =>
-                  !blocked && setSelected(isSelected ? undefined : card.id)
+                  !blocked &&
+                  (audio.current.play('select'),
+                  setSelected(isSelected ? undefined : card.id))
                 }
                 onKeyDown={(event) => {
                   if (
@@ -715,6 +889,27 @@ export function GameTable({
                 </span>
               ))}
             </div>
+            {series ? (
+              <div className="round-score-grid">
+                {series.participants.map((item) => {
+                  const player = view.public.room.players.find(
+                    (p) => p.playerId === item.playerId,
+                  );
+                  return (
+                    <div key={item.playerId}>
+                      <span>{player?.nickname}</span>
+                      <strong>
+                        {item.score >= 0 ? '+' : ''}
+                        {item.score}
+                      </strong>
+                      <small>
+                        {series.multiplier} 倍局 · {item.wins}胜 {item.losses}负
+                      </small>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             {series?.phase === 'continue-vote' ? (
               <div className="series-vote">
                 <p>
@@ -746,19 +941,36 @@ export function GameTable({
             {series?.phase === 'series-result' ? (
               <div className="series-ranking">
                 <h3>房间赛最终排名</h3>
-                {[...series.participants]
-                  .sort((a, b) => b.score - a.score)
-                  .map((item) => (
-                    <p key={item.playerId}>
-                      {
-                        view.public.room.players.find(
-                          (player) => player.playerId === item.playerId,
-                        )?.nickname
-                      }
-                      ：{item.score} 分 · {item.wins} 胜 {item.losses} 负
-                      {item.titles.length ? ` · ${item.titles.join('、')}` : ''}
-                    </p>
-                  ))}
+                {rankParticipants(series.participants).map((item) => (
+                  <article
+                    className={`rank-row rank-row--${item.rank}`}
+                    key={item.playerId}
+                  >
+                    <b className="rank-medal">{item.rank}</b>
+                    <span>
+                      <strong>
+                        {
+                          view.public.room.players.find(
+                            (player) => player.playerId === item.playerId,
+                          )?.nickname
+                        }
+                      </strong>
+                      <small>
+                        {item.wins} 胜 {item.losses} 负 · 最长连胜{' '}
+                        {item.longestStreak}
+                      </small>
+                    </span>
+                    <em>
+                      {item.score >= 0 ? '+' : ''}
+                      {item.score}
+                    </em>
+                    <div className="honor-badges">
+                      {item.titles.map((title) => (
+                        <i key={title}>{title}</i>
+                      ))}
+                    </div>
+                  </article>
+                ))}
               </div>
             ) : null}
             {history && (

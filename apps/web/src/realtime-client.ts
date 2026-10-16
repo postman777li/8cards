@@ -14,6 +14,8 @@ import {
   type GameRecord,
   type SpectatorId,
   type SpectatorView,
+  type ReactionEvent,
+  type ReactionId,
 } from '@8cards/shared';
 import type { StoredSession } from './lobby.js';
 
@@ -55,11 +57,13 @@ export interface LobbyConnection {
   exitSeries(): Promise<void>;
   action(value: GameAction): Promise<void>;
   chat(message: string): Promise<void>;
+  reaction(reactionId: ReactionId): Promise<void>;
   history(): Promise<void>;
   subscribeChat(
     listener: (messages: readonly ChatMessage[]) => void,
   ): () => void;
   subscribeHistory(listener: (value: VisitorHistory) => void): () => void;
+  subscribeReactions(listener: (value: ReactionEvent) => void): () => void;
   subscribe(listener: (view: PlayerView) => void): () => void;
   onDisconnect(listener: () => void): () => void;
   close(): void;
@@ -77,6 +81,7 @@ export interface SpectatorConnection {
   view: SpectatorView;
   socket: WebSocket;
   chat(message: string): Promise<void>;
+  reaction(reactionId: ReactionId): Promise<void>;
   history(): Promise<void>;
   leave(): Promise<void>;
   subscribe(listener: (view: SpectatorView) => void): () => void;
@@ -84,6 +89,7 @@ export interface SpectatorConnection {
     listener: (messages: readonly ChatMessage[]) => void,
   ): () => void;
   subscribeHistory(listener: (value: VisitorHistory) => void): () => void;
+  subscribeReactions(listener: (value: ReactionEvent) => void): () => void;
   onDisconnect(listener: () => void): () => void;
   close(): void;
 }
@@ -140,6 +146,7 @@ class LiveConnection implements LobbyConnection {
   #closes = new Set<() => void>();
   #chatListeners = new Set<(messages: readonly ChatMessage[]) => void>();
   #historyListeners = new Set<(value: VisitorHistory) => void>();
+  #reactionListeners = new Set<(value: ReactionEvent) => void>();
   #messages: ChatMessage[] = [];
   #blockingPending = 0;
   #closed = false;
@@ -184,6 +191,9 @@ class LiveConnection implements LobbyConnection {
   chat(message: string) {
     return this.#send('chat.send', { message }, false);
   }
+  reaction(reactionId: ReactionId) {
+    return this.#send('reaction.send', { reactionId }, false);
+  }
   history() {
     return this.#send('history.get', {}, false);
   }
@@ -195,6 +205,10 @@ class LiveConnection implements LobbyConnection {
   subscribeHistory(listener: (value: VisitorHistory) => void) {
     this.#historyListeners.add(listener);
     return () => this.#historyListeners.delete(listener);
+  }
+  subscribeReactions(listener: (value: ReactionEvent) => void) {
+    this.#reactionListeners.add(listener);
+    return () => this.#reactionListeners.delete(listener);
   }
   subscribe(listener: (view: PlayerView) => void) {
     this.#views.add(listener);
@@ -220,6 +234,7 @@ class LiveConnection implements LobbyConnection {
       | 'room.seat.respond'
       | 'game.action'
       | 'chat.send'
+      | 'reaction.send'
       | 'history.get'
       | 'series.continue'
       | 'series.exit',
@@ -227,6 +242,7 @@ class LiveConnection implements LobbyConnection {
       ready?: boolean;
       action?: GameAction;
       message?: string;
+      reactionId?: ReactionId;
       targetSeat?: 0 | 1 | 2 | 3;
       seatRequestId?: string;
       accept?: boolean;
@@ -284,6 +300,10 @@ class LiveConnection implements LobbyConnection {
           .slice(-100);
         for (const listener of this.#chatListeners) listener(this.#messages);
       }
+      return;
+    }
+    if (event.type === 'reaction.show') {
+      for (const listener of this.#reactionListeners) listener(event);
       return;
     }
     if (event.type === 'chat.history') {
@@ -493,6 +513,7 @@ class LiveSpectator implements SpectatorConnection {
   #views = new Set<(view: SpectatorView) => void>();
   #chats = new Set<(messages: readonly ChatMessage[]) => void>();
   #histories = new Set<(value: VisitorHistory) => void>();
+  #reactions = new Set<(value: ReactionEvent) => void>();
   #closes = new Set<() => void>();
   #messages: ChatMessage[] = [];
   #closed = false;
@@ -521,6 +542,12 @@ class LiveSpectator implements SpectatorConnection {
       expectedStateVersion: this.view.public.stateVersion,
     });
   }
+  reaction(reactionId: ReactionId) {
+    return this.#send('reaction.send', {
+      reactionId,
+      expectedStateVersion: this.view.public.stateVersion,
+    });
+  }
   history() {
     return this.#send('history.get', {});
   }
@@ -544,6 +571,10 @@ class LiveSpectator implements SpectatorConnection {
     this.#histories.add(listener);
     return () => this.#histories.delete(listener);
   }
+  subscribeReactions(listener: (value: ReactionEvent) => void) {
+    this.#reactions.add(listener);
+    return () => this.#reactions.delete(listener);
+  }
   onDisconnect(listener: () => void) {
     this.#closes.add(listener);
     return () => this.#closes.delete(listener);
@@ -555,7 +586,7 @@ class LiveSpectator implements SpectatorConnection {
     if (this.socket.readyState < 2) this.socket.close();
   }
   #send(
-    type: 'chat.send' | 'history.get' | 'spectate.leave',
+    type: 'chat.send' | 'reaction.send' | 'history.get' | 'spectate.leave',
     body: Record<string, unknown>,
   ) {
     if (this.#closed)
@@ -606,6 +637,10 @@ class LiveSpectator implements SpectatorConnection {
           .sort((a, b) => a.chatVersion - b.chatVersion)
           .slice(-100);
       for (const listener of this.#chats) listener(this.#messages);
+      return;
+    }
+    if (event.type === 'reaction.show') {
+      for (const listener of this.#reactions) listener(event);
       return;
     }
     if (event.type === 'chat.history') {

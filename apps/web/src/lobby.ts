@@ -15,6 +15,7 @@ export const VISITOR_STORAGE_KEY = '8cards:visitor:id';
 
 export interface LobbySettings {
   soundEffects: boolean;
+  soundVolume: number;
   backgroundMusic: boolean;
   reducedMotion: boolean;
 }
@@ -37,6 +38,7 @@ export function getOrCreateVisitorId(storage: Storage): VisitorId {
 
 export const defaultSettings: LobbySettings = {
   soundEffects: true,
+  soundVolume: 0.45,
   backgroundMusic: false,
   reducedMotion: false,
 };
@@ -91,7 +93,13 @@ export function loadSettings(storage: Storage): LobbySettings {
       typeof value.backgroundMusic === 'boolean' &&
       typeof value.reducedMotion === 'boolean'
     )
-      return value as LobbySettings;
+      return {
+        ...value,
+        soundVolume:
+          typeof value.soundVolume === 'number'
+            ? Math.max(0, Math.min(1, value.soundVolume))
+            : 0.45,
+      } as LobbySettings;
   } catch {
     // Corrupt preferences are safely replaced with defaults.
   }
