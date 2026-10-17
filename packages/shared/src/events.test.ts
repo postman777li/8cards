@@ -346,6 +346,7 @@ function clientEventType(event: ClientEvent): string {
     case 'room.seat.request':
     case 'room.seat.respond':
     case 'chat.send':
+    case 'reaction.send':
     case 'spectate.join':
     case 'spectate.resume':
     case 'spectate.leave':
@@ -369,6 +370,7 @@ function serverEventType(event: ServerEvent): string {
     case 'state.spectator':
     case 'state.public':
     case 'chat.message':
+    case 'reaction.show':
     case 'chat.history':
     case 'history.result':
       return event.type;

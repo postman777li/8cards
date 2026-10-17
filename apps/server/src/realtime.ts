@@ -738,6 +738,29 @@ export class RealtimeService {
       });
       return { stateVersion: runtime.stateVersion };
     }
+    if (event.type === 'reaction.send') {
+      if (!runtime.snapshot.config.allowChat)
+        throw new RoomServiceError('UNAUTHORIZED', '房间未开启互动');
+      const now = this.#clock.now();
+      connection.chatSentAt = connection.chatSentAt.filter(
+        (time) => now - time < 10_000,
+      );
+      if (connection.chatSentAt.length >= 5)
+        throw new ProtocolFailure('RATE_LIMITED', '互动过于频繁，请稍后再试');
+      connection.chatSentAt.push(now);
+      this.#broadcastEvent(runtime, {
+        type: 'reaction.show',
+        protocolVersion: PROTOCOL_VERSION,
+        stateVersion: runtime.stateVersion,
+        reactionEventId: randomUUID(),
+        reactionId: event.reactionId,
+        sentAt: new Date(now).toISOString(),
+        ...(identity.kind === 'player'
+          ? { senderPlayerId: identity.playerId }
+          : { senderSpectatorId: identity.spectatorId }),
+      });
+      return { stateVersion: runtime.stateVersion };
+    }
     if (event.type === 'history.get') {
       const finished = runtime.authority?.state.phase === 'finished';
       const history = await this.#history.getVisitorHistory(

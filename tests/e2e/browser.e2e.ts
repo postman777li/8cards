@@ -11,7 +11,7 @@ import { compareCards } from '../../packages/game-engine/src/index.ts';
 import type { Card } from '../../packages/shared/src/index.ts';
 
 const evidenceRoot =
-  process.env.EIGHTCARDS_EVIDENCE ?? 'C:/Users/12571/8cards-task19-evidence';
+  process.env.EIGHTCARDS_EVIDENCE ?? 'C:/Users/12571/8cards-task22-evidence';
 
 async function newPlayer(
   browser: Browser,
@@ -200,6 +200,17 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
       path: `${evidenceRoot}/screenshots/desktop-home-1440x900.png`,
       fullPage: true,
     });
+    await host.page.setViewportSize({ width: 844, height: 390 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-landscape-home-844x390.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 390, height: 844 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-portrait-home-390x844.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 1440, height: 900 });
     await host.page.getByRole('button', { name: '使用头像 1' }).click();
     const code = await createRoom(host.page, 2);
     const share = host.page.locator('.share > span');
@@ -230,6 +241,12 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
       path: `${evidenceRoot}/screenshots/mobile-landscape-waiting-844x390.png`,
       fullPage: true,
     });
+    await guest.page.setViewportSize({ width: 390, height: 844 });
+    await guest.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-portrait-waiting-390x844.png`,
+      fullPage: true,
+    });
+    await guest.page.setViewportSize({ width: 844, height: 390 });
 
     await host.page.getByRole('button', { name: '开始游戏' }).click();
     await expect(host.page.getByLabel('2人游戏牌桌')).toBeVisible();
@@ -241,11 +258,24 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
     await actor.getByRole('button', { name: /^(出牌|压牌)$/ }).click();
     await expect(actor.locator('.table-motion--play')).toBeAttached();
     await host.page.getByRole('button', { name: /^聊天/ }).click();
+    await host.page.getByRole('button', { name: '这局有点意思。' }).click();
+    await host.page.getByRole('button', { name: '鼓掌' }).click();
+    await expect(guest.page.locator('.reaction-burst strong')).toHaveText(
+      '鼓掌',
+    );
+    await guest.page.getByRole('button', { name: /^聊天/ }).click();
+    await guest.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-landscape-quick-reactions-844x390.png`,
+      fullPage: true,
+    });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-quick-reactions-1440x900.png`,
+      fullPage: true,
+    });
     await host.page
       .getByLabel('聊天内容')
       .fill('<img src=x onerror=alert(1)>纯文本');
     await host.page.getByRole('button', { name: '发送' }).click();
-    await guest.page.getByRole('button', { name: /^聊天/ }).click();
     await expect(
       guest.page
         .getByLabel('房间聊天')
@@ -254,6 +284,19 @@ test('大厅、分享链接、准备、开局、聊天、观战与三种响应�
     expect(await guest.page.locator('img[src="x"]').count()).toBe(0);
     await host.page.screenshot({
       path: `${evidenceRoot}/screenshots/desktop-game-1440x900.png`,
+      fullPage: true,
+    });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-stock-draw-1440x900.png`,
+      fullPage: true,
+    });
+    await guest.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-landscape-game-844x390.png`,
+      fullPage: true,
+    });
+    await guest.page.setViewportSize({ width: 390, height: 844 });
+    await guest.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-portrait-game-390x844.png`,
       fullPage: true,
     });
 
@@ -396,6 +439,39 @@ test('三四人等待房权威移座、交换、拒绝与对家关系', async ({
       path: `${evidenceRoot}/screenshots/desktop-four-seat-swap-1440x900.png`,
       fullPage: true,
     });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-four-waiting-1440x900.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 844, height: 390 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-landscape-four-waiting-844x390.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 390, height: 844 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-portrait-four-waiting-390x844.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 1440, height: 900 });
+    for (const player of [b, c, d]) {
+      const ready = player.page.getByRole('button', {
+        name: '准备',
+        exact: true,
+      });
+      if (await ready.isVisible()) await ready.click();
+    }
+    await host.page.getByRole('button', { name: '开始游戏' }).click();
+    await expect(host.page.getByLabel('4人游戏牌桌')).toBeVisible();
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-four-game-1440x900.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 844, height: 390 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-landscape-four-game-844x390.png`,
+      fullPage: true,
+    });
   } finally {
     await closeAll(
       contexts.filter((context) => !context.pages()[0]?.isClosed()),
@@ -480,6 +556,21 @@ test('真实浏览器完成两局连续房间赛、倍率显示与最终结算',
     const firstSteps = await playUntilVote(players);
     await expect(host.page.getByText(/第 1 局 · [1-4] 倍/)).toBeVisible();
     await expect(host.page.getByText(/总分/).first()).toBeVisible();
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/desktop-round-result-1440x900.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 844, height: 390 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-landscape-round-result-844x390.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 390, height: 844 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-portrait-round-result-390x844.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 1440, height: 900 });
     await host.page.getByRole('button', { name: '继续下一局' }).click();
     await guest.page.getByRole('button', { name: '继续下一局' }).click();
     await expect(host.page.getByText(/第 2 局 · [1-4] 倍/)).toBeVisible();
@@ -490,6 +581,16 @@ test('真实浏览器完成两局连续房间赛、倍率显示与最终结算',
     await expect(host.page.getByText(/总分/).first()).toBeVisible();
     await host.page.screenshot({
       path: `${evidenceRoot}/screenshots/desktop-two-round-series-result-1440x900.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 844, height: 390 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-landscape-final-ranking-844x390.png`,
+      fullPage: true,
+    });
+    await host.page.setViewportSize({ width: 390, height: 844 });
+    await host.page.screenshot({
+      path: `${evidenceRoot}/screenshots/mobile-portrait-final-ranking-390x844.png`,
       fullPage: true,
     });
     await writeFile(

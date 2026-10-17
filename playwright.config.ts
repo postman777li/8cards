@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 const evidenceRoot =
   process.env.EIGHTCARDS_EVIDENCE ??
-  'C:/Users/12571/8cards-task19-evidence/automation/playwright';
+  'C:/Users/12571/8cards-task22-evidence/automation/playwright';
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -38,7 +38,7 @@ export default defineConfig({
         PORT: '3101',
         EIGHTCARDS_DB:
           process.env.EIGHTCARDS_DB ??
-          'C:/Users/12571/8cards-task19-evidence/persistence/e2e.sqlite',
+          'C:/Users/12571/8cards-task22-evidence/persistence/e2e.sqlite',
       },
       reuseExistingServer: false,
       timeout: 30_000,

@@ -68,6 +68,7 @@ describe('local persistence', () => {
     const storage = new MemoryStorage();
     const settings = {
       soundEffects: false,
+      soundVolume: 0.3,
       backgroundMusic: true,
       reducedMotion: true,
     };
@@ -76,6 +77,7 @@ describe('local persistence', () => {
     storage.setItem(SETTINGS_STORAGE_KEY, '{bad');
     expect(loadSettings(storage)).toEqual({
       soundEffects: true,
+      soundVolume: 0.45,
       backgroundMusic: false,
       reducedMotion: false,
     });
