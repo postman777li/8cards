@@ -6,6 +6,7 @@ import { WebSocket } from 'ws';
 
 import { createApp, type AppServer } from './app.js';
 import type { RealtimeClock } from './realtime.js';
+import { SqliteHistoryStore, type HistoryStore } from './history-store.js';
 
 type Event = { type: string; [key: string]: unknown };
 
@@ -115,10 +116,16 @@ const publicOf = (event: Event) =>
     }
   ).public;
 
-async function setup(count: 2 | 3 | 4) {
+async function setup(
+  count: 2 | 3 | 4,
+  presentationEnabled = false,
+  historyStore?: HistoryStore,
+) {
   const clock = new FakeClock();
   let randomState = 12345;
   const server = createApp({
+    presentationEnabled,
+    ...(historyStore ? { historyStore } : {}),
     clock,
     random: () =>
       (randomState = (randomState * 1664525 + 1013904223) >>> 0) /
@@ -381,7 +388,10 @@ describe('authoritative turn timers', () => {
 describe('disconnect and session restoration', () => {
   it('automatically expires and broadcasts a pending seat swap after 30 seconds', async () => {
     const clock = new FakeClock();
-    const server = createApp({ clock });
+    const server = createApp({
+      presentationEnabled: false,
+      clock,
+    });
     servers.add(server);
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -575,5 +585,187 @@ describe('disconnect and session restoration', () => {
       });
       expect((denial.error as { code: string }).code).toBe('UNAUTHORIZED');
     },
+  );
+});
+
+describe('server presentation authority', () => {
+  it.each([2, 3, 4] as const)(
+    'gates %i-player dealing, recovery, and starts a full clock only afterward',
+    async (count) => {
+      const game = await setup(count, true);
+      const event = await state(game.players[0]!, game.version);
+      const snapshot = (event.view as import('@8cards/shared').PlayerView)
+        .public;
+      const p = snapshot.series!.presentation!;
+      expect(snapshot.game!.turnDeadline).toBeNull();
+      expect(p.recipients).toHaveLength(count * 8);
+      const ids = snapshot.room.players.map((x) => x.playerId);
+      expect(p.recipients).toEqual(Array.from({ length: 8 }, () => ids).flat());
+      expect(
+        (event.view as import('@8cards/shared').PlayerView).private
+          .legalActionTypes,
+      ).toEqual([]);
+      const actor = ids.indexOf(snapshot.game!.currentActorId!);
+      const actorView = (await state(game.players[actor]!, game.version))
+        .view as import('@8cards/shared').PlayerView;
+      const early = await send(game.players[actor]!, {
+        type: 'game.action',
+        ...meta('early', 3),
+        expectedStateVersion: game.version,
+        action: {
+          kind: 'play-card',
+          cardId: actorView.private.hand.find(
+            (card) => card.kind === 'standard',
+          )!.id,
+        },
+      });
+      expect(early.type).toBe('response.error');
+      expect(early.error).toMatchObject({
+        code: 'ILLEGAL_ACTION',
+        message: '发牌演出中，请稍候',
+      });
+      game.clock.advance(Date.parse(p.readyAt) - game.clock.now() - 1);
+      expect(game.clock.tasks.filter((x) => !x.cancelled)).toHaveLength(1);
+      game.clock.advance(1);
+      const ready = await state(game.players[0]!, game.version + 1);
+      expect(publicOf(ready).game!.turnDeadline).toBe(
+        new Date(game.clock.now() + 20000).toISOString(),
+      );
+      expect(
+        (ready.view as import('@8cards/shared').PlayerView).public.series!
+          .presentation,
+      ).toBeUndefined();
+    },
+  );
+});
+
+describe('authoritative per-card refill presentation', () => {
+  it.each([2, 3, 4] as const)(
+    'preserves actual %i-player draw order and delays the next clock',
+    async (count) => {
+      const game = await setup(count, true);
+      const first = await state(game.players[0]!, game.version);
+      const firstView = first.view as import('@8cards/shared').PlayerView;
+      const opening = firstView.public.series!.presentation!;
+      game.clock.advance(Date.parse(opening.readyAt) - game.clock.now());
+      let version = game.version + 1;
+      const ready = await state(game.players[0]!, version);
+      const actorId = publicOf(ready).game!.currentActorId;
+      const actorIndex = game.credentials.findIndex(
+        (c) => c.playerId === actorId,
+      );
+      const actorView = (await state(game.players[actorIndex]!, version))
+        .view as import('@8cards/shared').PlayerView;
+      const card = actorView.private.hand.find((c) => c.kind === 'standard')!;
+      const attack = await send(game.players[actorIndex]!, {
+        type: 'game.action',
+        ...meta('refill-attack', 3),
+        expectedStateVersion: version,
+        action: { kind: 'play-card', cardId: card.id },
+      });
+      expect(attack.type).toBe('response.ok');
+      version++;
+      game.clock.advance(20000);
+      const refilled = await state(game.players[0]!, version + 1);
+      const view = refilled.view as import('@8cards/shared').PlayerView;
+      const p = view.public.series!.presentation!;
+      expect(p.kind).toBe('refill');
+      expect(p.recipients).toEqual([actorId]);
+      expect(p.beforeCounts.find((c) => c.playerId === actorId)?.count).toBe(7);
+      expect(p.stockBefore - view.public.game!.stockCount).toBe(1);
+      expect(view.public.game!.turnDeadline).toBeNull();
+      expect(view.private.legalActionTypes).toEqual([]);
+      expect(JSON.stringify(p)).not.toMatch(/cardId|rank|suit|reconnectToken/);
+      game.clock.advance(Date.parse(p.readyAt) - game.clock.now());
+      const active = await state(game.players[0]!, version + 2);
+      expect(publicOf(active).game!.turnDeadline).toBe(
+        new Date(game.clock.now() + 20000).toISOString(),
+      );
+    },
+  );
+});
+
+it('cancels authority timers before awaiting a slow forfeit history write', async () => {
+  const sqlite = new SqliteHistoryStore(':memory:');
+  let release = () => {};
+  let writing = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const store: HistoryStore = {
+    saveGame: async (game) => {
+      writing = true;
+      await gate;
+      return sqlite.saveGame(game);
+    },
+    saveSeries: sqlite.saveSeries.bind(sqlite),
+    getVisitorHistory: sqlite.getVisitorHistory.bind(sqlite),
+    ping: sqlite.ping.bind(sqlite),
+    close: sqlite.close.bind(sqlite),
+  };
+  const game = await setup(2, false, store);
+  try {
+    game.players[0]!.send({
+      type: 'series.exit',
+      ...meta('slow-exit', 3),
+      expectedStateVersion: game.version,
+    });
+    for (let attempt = 0; !writing && attempt < 100; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(writing).toBe(true);
+    game.clock.advance(20000);
+    expect(game.clock.tasks.filter((task) => !task.cancelled)).toHaveLength(0);
+    release();
+    expect(
+      (await game.players[0]!.find((event) => event.requestId === 'slow-exit'))
+        .type,
+    ).toBe('response.ok');
+    const ended = (await state(game.players[0]!, game.version + 1))
+      .view as import('@8cards/shared').PlayerView;
+    expect(ended.public.game!.table).toEqual([]);
+    expect(ended.public.game!.turnDeadline).toBeNull();
+    expect(ended.public.series!.phase).toBe('series-result');
+    expect(ended.public.series!.lastRoundResult!.reason).toBe('forfeit');
+    expect(
+      ended.public.series!.lastRoundResult!.participants.reduce(
+        (sum, p) => sum + p.delta,
+        0,
+      ),
+    ).toBe(0);
+  } finally {
+    release();
+  }
+});
+
+it('does not let a boundary packet cancel the queued presentation activation', async () => {
+  const game = await setup(2, true);
+  const view = (await state(game.players[0]!, game.version))
+    .view as import('@8cards/shared').PlayerView;
+  const p = view.public.series!.presentation!;
+  const actor = game.credentials.findIndex(
+    (c) => c.playerId === view.public.game!.currentActorId,
+  );
+  const actorView = (await state(game.players[actor]!, game.version))
+    .view as import('@8cards/shared').PlayerView;
+  game.clock.time = Date.parse(p.readyAt) + 10;
+  const result = await send(game.players[actor]!, {
+    type: 'game.action',
+    ...meta('boundary', 3),
+    expectedStateVersion: game.version,
+    action: {
+      kind: 'play-card',
+      cardId: actorView.private.hand.find((card) => card.kind === 'standard')!
+        .id,
+    },
+  });
+  expect(result.type).toBe('response.error');
+  expect(game.clock.tasks.filter((task) => !task.cancelled)).toHaveLength(1);
+  game.clock.advance(0);
+  const active = (await state(game.players[actor]!, game.version + 1))
+    .view as import('@8cards/shared').PlayerView;
+  expect(active.public.series!.presentation).toBeUndefined();
+  expect(active.private.legalActionTypes).toContain('play-card');
+  expect(active.public.game!.turnDeadline).toBe(
+    new Date(game.clock.now() + 20000).toISOString(),
   );
 });

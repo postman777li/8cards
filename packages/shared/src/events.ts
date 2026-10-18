@@ -13,6 +13,7 @@ import {
   visitorIdSchema,
 } from './common.js';
 import {
+  roundResultSchema,
   playerViewSchema,
   publicSnapshotSchema,
   spectatorViewSchema,
@@ -237,7 +238,8 @@ export const gameRecordSchema = z.strictObject({
   playerCount: z.union([z.literal(2), z.literal(3), z.literal(4)]),
   startedAt: timestampSchema,
   endedAt: timestampSchema,
-  reason: z.enum(['emptied-hand', 'stuck-with-jokers']),
+  reason: z.enum(['emptied-hand', 'stuck-with-jokers', 'forfeit']),
+  roundResult: roundResultSchema.optional(),
   participants: z.array(participantResultSchema).min(2).max(4),
 });
 const historyResultEventSchema = z.strictObject({

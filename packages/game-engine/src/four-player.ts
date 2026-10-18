@@ -184,12 +184,21 @@ function teamOf<PlayerId extends string>(
   return state.teams[(state.players.indexOf(player) % 2) as 0 | 1];
 }
 function terminalResult<PlayerId extends string>(
-  state: StateData<PlayerId>,
+  state: StateData<PlayerId> & {
+    readonly phase: 'awaiting-attack' | 'awaiting-defense';
+    readonly actor: PlayerId;
+  },
 ): FourPlayerResult<PlayerId> | null {
-  // Stable seat order is provisional for simultaneous joker-only hands; task 10 must review it.
   for (const player of state.players) {
     const hand = state.hands.get(player)!;
-    if (hand.length > 0 && hand.every((card) => card.kind === 'joker')) {
+    if (
+      state.phase === 'awaiting-attack' &&
+      state.actor === player &&
+      state.table.length === 0 &&
+      player === state.roundAttacker &&
+      hand.length > 0 &&
+      hand.every((card) => card.kind === 'joker')
+    ) {
       const losingTeam = teamOf(state, player);
       const winningTeam = state.teams[losingTeam.id === 0 ? 1 : 0];
       return {
@@ -478,4 +487,10 @@ export function applyFourPlayerAction<PlayerId extends string>(
     version: active.version + 1,
     result: null,
   });
+}
+
+export function resolveFourPlayerState<PlayerId extends string>(
+  state: FourPlayerState<PlayerId>,
+): FourPlayerState<PlayerId> {
+  return state.phase === 'finished' ? state : finalize(state);
 }

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createStandardDeck } from './cards.js';
 import type { InitialDeal } from './deal.js';
 import {
+  resolveFourPlayerState,
   applyFourPlayerAction,
   assertFourPlayerInvariant,
   createFourPlayerState,
@@ -400,7 +401,18 @@ describe('replenishment, complete flow, exchange, and terminal teams', () => {
     };
     const actor = loser === 'A' ? 'C' : 'A';
     const opening = actor === 'C' ? 'hearts-3' : 'clubs-3';
-    const result = attack({ ...state, actor, attackCursor: actor }, opening);
+    expect(
+      attack({ ...state, actor, attackCursor: actor }, opening).phase,
+    ).toBe('awaiting-defense');
+    const result = resolveFourPlayerState({
+      ...state,
+      roundAttacker: loser,
+      actor: loser,
+      attackCursor: loser,
+      defender: players[(players.indexOf(loser) + 1) % 4]!,
+      observer: players[(players.indexOf(loser) + 3) % 4]!,
+      attackers: [loser, players[(players.indexOf(loser) + 2) % 4]!],
+    });
     expect(result.result).toMatchObject({
       triggerPlayer: loser,
       reason: 'stuck-with-jokers',

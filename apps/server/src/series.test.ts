@@ -144,17 +144,17 @@ describe('room series scoring and multipliers', () => {
     );
   });
 
-  it('starts eggs at round three, uses 25% boundary, and eggs override streaks', () => {
+  it('starts eggs at round three, uses 40% boundary, and eggs override streaks', () => {
     expect(chooseRoundMultiplier(2, true, () => 0)).toEqual({
       multiplier: 2,
       multiplierReason: 'winning-streak',
     });
-    const values = [0.249999, 0.8];
+    const values = [0.399999999, 0.8];
     expect(chooseRoundMultiplier(3, true, () => values.shift()!)).toEqual({
       multiplier: 4,
       multiplierReason: 'easter-egg',
     });
-    expect(chooseRoundMultiplier(3, false, () => 0.25)).toEqual({
+    expect(chooseRoundMultiplier(3, false, () => 0.4)).toEqual({
       multiplier: 1,
       multiplierReason: 'normal',
     });
@@ -175,5 +175,75 @@ describe('room series scoring and multipliers', () => {
           item.titles.includes('嘉豪之王') && item.titles.includes('常胜将军'),
       ),
     ).toBe(true);
+  });
+});
+
+describe('task 23 authoritative round results', () => {
+  it.each([2, 3, 4] as const)(
+    'publishes complete %i-player placements and multiplied zero-sum deltas',
+    (count) => {
+      const before = series(count, 3);
+      const result = scoreRankedRound(
+        before,
+        count,
+        ids.slice(0, count),
+        count === 4
+          ? [
+              [ids[0]!, ids[2]!],
+              [ids[1]!, ids[3]!],
+            ]
+          : undefined,
+      ).lastRoundResult!;
+      expect(result.participants.map((p) => p.rank)).toEqual(
+        Array.from({ length: count }, (_, i) => i + 1),
+      );
+      expect(result.participants.reduce((s, p) => s + p.delta, 0)).toBe(0);
+      for (const p of result.participants) {
+        expect(p.delta).toBe(p.baseScore * 3);
+        expect(p.totalScore).toBe(p.delta);
+      }
+    },
+  );
+  it.each([2, 3, 4] as const)(
+    'uses competition ties for %i-player joker/exit results',
+    (count) => {
+      const losers = new Set(
+        count === 4 ? [ids[1]!, ids[3]!] : [ids[count - 1]!],
+      );
+      const winners = new Set(
+        ids.slice(0, count).filter((id) => !losers.has(id)),
+      );
+      for (const reason of ['stuck-with-jokers', 'forfeit'] as const) {
+        const after = scoreSeriesRound(
+          series(count, 4),
+          count,
+          winners,
+          losers,
+          reason,
+        );
+        expect(
+          after.lastRoundResult!.participants.map((p) => p.rank).sort(),
+        ).toEqual(
+          count === 2 ? [1, 2] : count === 3 ? [1, 1, 3] : [1, 1, 3, 3],
+        );
+        expect(
+          after.lastRoundResult!.participants.reduce((s, p) => s + p.delta, 0),
+        ).toBe(0);
+        expect(finalizeSeries(after).lastRoundResult).toEqual(
+          after.lastRoundResult,
+        );
+      }
+    },
+  );
+  it.each([
+    [0, 2],
+    [1 / 3, 3],
+    [2 / 3, 4],
+    [0.999999, 4],
+  ] as const)('chooses equal multiplier thirds at %f', (value, multiplier) => {
+    const values = [0.399999999, value];
+    expect(
+      chooseRoundMultiplier(3, true, () => values.shift()!).multiplier,
+    ).toBe(multiplier);
   });
 });

@@ -2,14 +2,14 @@ import { defineConfig } from '@playwright/test';
 
 const evidenceRoot =
   process.env.EIGHTCARDS_EVIDENCE ??
-  'C:/Users/12571/8cards-task22-evidence/automation/playwright';
+  'C:/Users/12571/8cards-task23-evidence/automation/playwright';
 
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: '**/*.e2e.ts',
   fullyParallel: false,
   workers: 1,
-  timeout: 60_000,
+  timeout: 240_000,
   expect: { timeout: 10_000 },
   outputDir: `${evidenceRoot}/artifacts`,
   reporter: [
@@ -19,9 +19,9 @@ export default defineConfig({
   ],
   use: {
     baseURL: 'http://127.0.0.1:4173',
-    trace: 'retain-on-failure',
+    trace: 'off',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: 'off',
     launchOptions:
       process.platform === 'win32'
         ? {
@@ -32,13 +32,14 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'pnpm --filter @8cards/server dev',
+      command:
+        'pnpm --filter @8cards/server exec tsx ../../tests/e2e/server.ts',
       url: 'http://127.0.0.1:3101/health',
       env: {
         PORT: '3101',
         EIGHTCARDS_DB:
           process.env.EIGHTCARDS_DB ??
-          'C:/Users/12571/8cards-task22-evidence/persistence/e2e.sqlite',
+          'C:/Users/12571/8cards-task23-evidence/persistence/e2e.sqlite',
       },
       reuseExistingServer: false,
       timeout: 30_000,

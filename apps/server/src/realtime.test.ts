@@ -87,6 +87,7 @@ const start = async (
 ) => {
   let randomState = 0x12345678;
   const server = createApp({
+    presentationEnabled: false,
     random:
       randomOverride ??
       (() => {
