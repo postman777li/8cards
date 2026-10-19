@@ -166,11 +166,21 @@ export function assertTwoPlayerInvariant<PlayerId extends string>(
 }
 
 function terminalResult<PlayerId extends string>(
-  state: StateData<PlayerId>,
+  state: StateData<PlayerId> & {
+    readonly phase: 'awaiting-attack' | 'awaiting-defense';
+    readonly actor: PlayerId;
+  },
 ): TwoPlayerResult<PlayerId> | null {
   for (const player of state.players) {
     const hand = state.hands.get(player)!;
-    if (hand.length > 0 && hand.every((card) => card.kind === 'joker')) {
+    if (
+      state.phase === 'awaiting-attack' &&
+      state.actor === player &&
+      state.table.length === 0 &&
+      player === state.attacker &&
+      hand.length > 0 &&
+      hand.every((card) => card.kind === 'joker')
+    ) {
       const winner = state.players.find((candidate) => candidate !== player)!;
       return { winner, loser: player, reason: 'opponent-stuck-with-jokers' };
     }
@@ -458,4 +468,10 @@ export function applyTwoPlayerAction<PlayerId extends string>(
     version: defenseState.version + 1,
     result: null,
   });
+}
+
+export function resolveTwoPlayerState<PlayerId extends string>(
+  state: TwoPlayerState<PlayerId>,
+): TwoPlayerState<PlayerId> {
+  return state.phase === 'finished' ? state : finalize(state);
 }

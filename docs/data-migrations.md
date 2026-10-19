@@ -11,3 +11,5 @@
 新增迁移只能追加更高编号，已部署迁移不得原地修改。生产迁移前先用 `scripts/backup-postgres.sh` 生成逻辑备份，并按 `docs/operations.md` 恢复到空白测试库演练。真 PostgreSQL 并发测试由 `POSTGRES_TEST_DATABASE_URL` 显式启用，变量必须指向名称包含 `8cards_test` 的隔离数据库。
 
 任务 21 追加版本 2：`002_room_series.sqlite.sql` 与 `002_room_series.postgres.sql` 新增 `room_series` 汇总表，使用 `series_id` 幂等保存最终排名、积分、胜负、连胜和称号 JSON。版本 1 文件保持不变；SQLite 与 PostgreSQL 启动迁移均按 1、2 顺序跳过已应用版本。旧备份可直接向前迁移，回滚应用时版本 2 表可保留且不影响旧代码。
+
+任务 23 不增加 SQL 迁移。已完成单局的 record_json 新增可选 roundResult 公共结算，包含名次、基础分、倍率、增减和累计分；旧记录没有此字段仍可读取。两种数据库继续按 game_id/series_id 幂等，不保存演出队列、手牌、牌墩或凭证。

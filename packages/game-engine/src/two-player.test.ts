@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createStandardDeck } from './cards.js';
 import type { InitialDeal } from './deal.js';
 import {
+  resolveTwoPlayerState,
   applyTwoPlayerAction,
   assertTwoPlayerInvariant,
   createTwoPlayerState,
@@ -598,7 +599,7 @@ describe('trump-two exchange and terminal results', () => {
     }
   });
 
-  it('applies stuck-with-jokers before empty-hand victory and rejects later actions', () => {
+  it('only resolves joker-only loss at the mandatory opening and rejects later actions', () => {
     let state = initial(
       deal(
         [
@@ -633,7 +634,13 @@ describe('trump-two exchange and terminal results', () => {
       ),
       discard: [...state.discard, ...moved],
     };
-    const result = attack(state, 'clubs-3');
+    expect(attack(state, 'clubs-3').phase).toBe('awaiting-defense');
+    const result = resolveTwoPlayerState({
+      ...state,
+      attacker: 'bob',
+      defender: 'alice',
+      actor: 'bob',
+    });
     expect(result).toMatchObject({
       phase: 'finished',
       result: {

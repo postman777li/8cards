@@ -9,7 +9,7 @@ export function chooseRoundMultiplier(
   let multiplierReason: RoomSeries['multiplierReason'] = winningStreak
     ? 'winning-streak'
     : 'normal';
-  if (roundNumber >= 3 && random() < 0.25) {
+  if (roundNumber >= 3 && random() < 0.4) {
     const value = random();
     multiplier = value < 1 / 3 ? 2 : value < 2 / 3 ? 3 : 4;
     multiplierReason = 'easter-egg';
@@ -22,9 +22,10 @@ export function scoreSeriesRound(
   playerCount: 2 | 3 | 4,
   winners: ReadonlySet<PlayerId>,
   losers: ReadonlySet<PlayerId>,
+  reason: 'stuck-with-jokers' | 'forfeit' = 'stuck-with-jokers',
 ): RoomSeries {
   const splitThreeWin = playerCount === 3 && winners.size === 2;
-  return {
+  const result: RoomSeries = {
     ...series,
     phase: 'continue-vote',
     participants: series.participants.map((item) => {
@@ -56,6 +57,9 @@ export function scoreSeriesRound(
       choice: 'pending',
     })),
   };
+  return withRoundResult(series, result, reason, (id) =>
+    winners.has(id) ? 1 : losers.has(id) ? winners.size + 1 : winners.size + 1,
+  );
 }
 
 export function scoreRankedRound(
@@ -88,7 +92,7 @@ export function scoreRankedRound(
           finishOrder[0]!,
         ])
       : [finishOrder[0]!];
-  return {
+  const result: RoomSeries = {
     ...series,
     phase: 'continue-vote',
     participants: series.participants.map((item) => {
@@ -110,6 +114,47 @@ export function scoreRankedRound(
       ...item,
       choice: 'pending',
     })),
+  };
+  return withRoundResult(
+    series,
+    result,
+    'emptied-hand',
+    (id) => finishOrder.indexOf(id) + 1,
+  );
+}
+
+function withRoundResult(
+  before: RoomSeries,
+  after: RoomSeries,
+  reason: 'emptied-hand' | 'stuck-with-jokers' | 'forfeit',
+  rank: (id: PlayerId) => number,
+): RoomSeries {
+  return {
+    ...after,
+    lastRoundResult: {
+      roundNumber: before.roundNumber,
+      reason,
+      participants: after.participants.map((item) => {
+        const old = before.participants.find(
+          (p) => p.playerId === item.playerId,
+        )!;
+        const delta = item.score - old.score;
+        return {
+          playerId: item.playerId,
+          rank: rank(item.playerId),
+          baseScore: delta / before.multiplier,
+          multiplier: before.multiplier,
+          delta,
+          totalScore: item.score,
+          outcome:
+            item.wins > old.wins
+              ? 'win'
+              : item.losses > old.losses
+                ? 'loss'
+                : 'unresolved',
+        };
+      }),
+    },
   };
 }
 

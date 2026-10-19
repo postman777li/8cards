@@ -85,6 +85,10 @@ export const projectLoserIds = (
       ...(state as FourPlayerState<PlayerId> & { phase: 'finished' }).result
         .losingTeam.members,
     ];
+  if (authority.mode === 2)
+    return [
+      (state as TwoPlayerState<PlayerId> & { phase: 'finished' }).result.loser,
+    ];
   return undefined;
 };
 
@@ -161,6 +165,12 @@ const projectGame = (
         playerId,
         handCount: state.hands.get(playerId)?.length ?? 0,
         ...roles(authority, playerId),
+        team:
+          room.config.playerCount === 4
+            ? room.players.find((p) => p.playerId === playerId)!.seat % 2 === 0
+              ? ('team-a' as const)
+              : ('team-b' as const)
+            : ('solo' as const),
       })),
       ...room.players
         .filter((player) => !state.players.includes(player.playerId))
@@ -267,7 +277,12 @@ export const projectPlayerView = (
       turnDeadline,
       series,
     ),
-    private: { hand, legalActionTypes: legalActions(authority, playerId) },
+    private: {
+      hand,
+      legalActionTypes: series?.presentation
+        ? []
+        : legalActions(authority, playerId),
+    },
   });
 };
 

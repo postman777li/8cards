@@ -1,7 +1,14 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Badge, Button, Panel, PlayerSeat, PlayingCard } from '@8cards/ui';
 import type { Card, ChatMessage, SpectatorView } from '@8cards/shared';
 import type { SpectatorConnection, VisitorHistory } from './realtime-client.js';
+import { ReactionIcon } from './reaction-icon.js';
+import {
+  usePresentation,
+  PresentationStage,
+  RoundRanking,
+} from './round-presentation.js';
+import { secondsRemaining } from './game-table.js';
 import { avatarImage } from './avatars.js';
 import { QUICK_PHRASES, REACTIONS, reactionLabel } from './experience.js';
 
@@ -39,16 +46,40 @@ export function SpectatorTable({
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const [history, setHistory] = useState<VisitorHistory>();
   const [text, setText] = useState('');
+  const [chatOpen, setChatOpen] = useState(false);
+  const messageList = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (messageList.current)
+      messageList.current.scrollTop = messageList.current.scrollHeight;
+  }, [messages, chatOpen]);
   const game = view.public.game;
+  const progress = usePresentation(view.public.series);
+  const [now, setNow] = useState(Date.now);
+  const [reaction, setReaction] =
+    useState<import('@8cards/shared').ReactionEvent>();
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(t);
+  }, []);
+  useEffect(() => connection.subscribeReactions(setReaction), [connection]);
+  useEffect(() => {
+    if (!reaction) return;
+    const t = window.setTimeout(() => setReaction(undefined), 2100);
+    return () => window.clearTimeout(t);
+  }, [reaction]);
   useEffect(() => {
     const a = connection.subscribeChat(setMessages);
     const b = connection.subscribeHistory(setHistory);
-    if (game?.phase === 'finished') void connection.history();
+    if (
+      game?.phase === 'finished' ||
+      view.public.series?.phase === 'series-result'
+    )
+      void connection.history();
     return () => {
       a();
       b();
     };
-  }, [connection, game?.phase]);
+  }, [connection, game?.phase, view.public.series?.phase]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const value = text.trim();
@@ -58,6 +89,23 @@ export function SpectatorTable({
   };
   return (
     <section className="spectator-layout">
+      {reaction ? (
+        <div className="reaction-burst" role="status">
+          <ReactionIcon id={reaction.reactionId} />
+          <strong>{reactionLabel[reaction.reactionId]}</strong>
+        </div>
+      ) : null}
+      <PresentationStage
+        series={view.public.series}
+        positions={
+          new Map(
+            view.public.room.players.map((p, i) => [
+              p.playerId,
+              ['self', 'right', 'top', 'left'][i]!,
+            ]),
+          )
+        }
+      />
       <Panel className="spectator-board" tone="felt">
         <header className="room-title">
           <div>
@@ -67,32 +115,58 @@ export function SpectatorTable({
           <Badge tone="gold" dot>
             观战中 · 不能操作
           </Badge>
+          <button
+            className="spectator-chat-toggle"
+            type="button"
+            aria-label="打开观战聊天"
+            aria-expanded={chatOpen}
+            onClick={() => setChatOpen(true)}
+          >
+            聊天
+          </button>
         </header>
         <div className="spectator-seats">
           {view.public.room.players.map((player) => {
-            const count = game?.players.find(
-              (item) => item.playerId === player.playerId,
-            )?.handCount;
+            const count =
+              progress?.count(player.playerId) ??
+              game?.players.find((item) => item.playerId === player.playerId)
+                ?.handCount;
             return (
-              <PlayerSeat
-                key={player.playerId}
-                name={player.nickname}
-                avatar={
-                  avatarImage(player.avatarId) ? (
-                    <img src={avatarImage(player.avatarId)!} alt="" />
-                  ) : (
-                    player.nickname.slice(0, 1)
-                  )
-                }
-                online={player.connection === 'online'}
-                {...(count === undefined ? {} : { cards: count })}
-                {...(game?.currentActorId === player.playerId
-                  ? { role: '当前行动者' }
-                  : {})}
-              />
+              <div key={player.playerId} data-player-id={player.playerId}>
+                <PlayerSeat
+                  name={player.nickname}
+                  avatar={
+                    avatarImage(player.avatarId) ? (
+                      <img src={avatarImage(player.avatarId)!} alt="" />
+                    ) : (
+                      player.nickname.slice(0, 1)
+                    )
+                  }
+                  online={player.connection === 'online'}
+                  {...(count === undefined ? {} : { cards: count })}
+                  {...(game?.currentActorId === player.playerId
+                    ? { role: '当前行动者' }
+                    : {})}
+                />
+              </div>
             );
           })}
         </div>
+        {game ? (
+          <div className="spectator-timing">
+            <div className="stock-stack">
+              <span>
+                牌墩 <strong>{progress?.stock ?? game.stockCount}</strong>
+              </span>
+            </div>
+            <div className="turn-clock">
+              <strong>
+                {secondsRemaining(game.turnDeadline, now) ?? '发牌'}
+              </strong>
+              <span>{progress ? '计时未开始' : '秒'}</span>
+            </div>
+          </div>
+        ) : null}
         <div className="spectator-table-cards">
           {game?.table.length ? (
             game.table.map((play) => (
@@ -105,14 +179,32 @@ export function SpectatorTable({
             <p>桌面暂时没有牌</p>
           )}
         </div>
-        {game?.phase === 'finished' && (
+        {(game?.phase === 'finished' ||
+          view.public.series?.lastRoundResult) && (
           <Panel className="spectator-settlement">
             <h2>本局已结束</h2>
             <p>
-              {game.resultReason === 'stuck-with-jokers'
-                ? '憋王结算'
-                : '空手获胜'}
+              {view.public.series?.lastRoundResult?.reason === 'forfeit'
+                ? '退出结算'
+                : game?.resultReason === 'stuck-with-jokers'
+                  ? '憋王结算'
+                  : '空手获胜'}
             </p>
+            <RoundRanking
+              series={view.public.series}
+              players={view.public.room.players}
+            />
+            {view.public.series?.phase === 'continue-vote' ? (
+              <p>
+                继续投票{' '}
+                {
+                  view.public.series.continueVotes.filter(
+                    (vote) => vote.choice === 'continue',
+                  ).length
+                }
+                /{view.public.series.continueVotes.length}
+              </p>
+            ) : null}
             {history && <p>本浏览器累计 {history.stats.games} 局</p>}
           </Panel>
         )}
@@ -125,9 +217,19 @@ export function SpectatorTable({
           {leaving ? '正在安全离开…' : '返回首页'}
         </Button>
       </Panel>
-      <Panel className="spectator-chat">
-        <h2>房间聊天</h2>
-        <div className="chat-messages">
+      <Panel className={`spectator-chat ${chatOpen ? 'is-open' : ''}`}>
+        <header className="spectator-chat-header">
+          <h2>房间聊天</h2>
+          <button
+            className="spectator-chat-close"
+            type="button"
+            aria-label="关闭观战聊天"
+            onClick={() => setChatOpen(false)}
+          >
+            ×
+          </button>
+        </header>
+        <div className="chat-messages" ref={messageList}>
           {messages.map((item) => (
             <p key={item.messageId}>
               <b>{item.senderNickname}</b>
@@ -140,7 +242,7 @@ export function SpectatorTable({
             <button
               type="button"
               key={phrase}
-              onClick={() => void connection.chat(phrase)}
+              onClick={() => void connection.chat(phrase).catch(() => {})}
             >
               {phrase}
             </button>
@@ -152,15 +254,16 @@ export function SpectatorTable({
               type="button"
               key={item}
               aria-label={reactionLabel[item]}
-              onClick={() => void connection.reaction(item)}
+              onClick={() => void connection.reaction(item).catch(() => {})}
             >
-              <i className={`reaction-icon reaction-icon--${item}`} />
+              <ReactionIcon id={item} />
               <span>{reactionLabel[item]}</span>
             </button>
           ))}
         </div>
         <form onSubmit={submit}>
           <input
+            aria-label="观战聊天内容"
             maxLength={300}
             value={text}
             onChange={(event) => setText(event.target.value)}

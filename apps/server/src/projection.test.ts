@@ -35,7 +35,7 @@ describe('multiplayer result projection', () => {
     ]);
   });
 
-  it('does not add loser ids to unfinished or two-player states', () => {
+  it('omits unfinished results and preserves the two-player loser after demotion', () => {
     expect(
       projectLoserIds({
         mode: 3,
@@ -45,8 +45,8 @@ describe('multiplayer result projection', () => {
     expect(
       projectLoserIds({
         mode: 2,
-        state: { phase: 'finished', result: {} },
+        state: { phase: 'finished', result: { loser: 'p1' } },
       } as unknown as AuthorityState),
-    ).toBeUndefined();
+    ).toEqual(['p1']);
   });
 });

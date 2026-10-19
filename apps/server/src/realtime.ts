@@ -22,6 +22,9 @@ import {
   type RoomSeries,
 } from '@8cards/shared';
 import {
+  resolveTwoPlayerState,
+  resolveThreePlayerState,
+  resolveFourPlayerState,
   FourPlayerEngineError,
   ThreePlayerEngineError,
   TwoPlayerEngineError,
@@ -133,8 +136,11 @@ export interface RealtimeClock {
 }
 
 export interface RealtimeOptions {
+  /** Internal harness option; production always uses the default true. */
+  presentationEnabled?: boolean;
   roomService?: RoomService;
   random?: () => number;
+  multiplierRandom?: () => number;
   clock?: RealtimeClock;
   historyStore?: HistoryStore;
   trustedOrigins?: ReadonlySet<string>;
@@ -208,6 +214,8 @@ class ProtocolFailure extends Error {
 export class RealtimeService {
   readonly webSocketServer: WebSocketServer;
   readonly #roomService: RoomService;
+  readonly #presentationEnabled: boolean;
+  readonly #multiplierRandom: () => number;
   readonly #random: () => number;
   readonly #clock: RealtimeClock;
   readonly #history: HistoryStore;
@@ -219,7 +227,9 @@ export class RealtimeService {
 
   constructor(options: RealtimeOptions = {}) {
     this.#roomService = options.roomService ?? new RoomService();
+    this.#presentationEnabled = options.presentationEnabled ?? true;
     this.#random = options.random ?? secureRandom;
+    this.#multiplierRandom = options.multiplierRandom ?? this.#random;
     this.#clock = options.clock ?? systemClock;
     this.#history = options.historyStore ?? new SqliteHistoryStore();
     this.#trustedOrigins = options.trustedOrigins;
@@ -762,7 +772,8 @@ export class RealtimeService {
       return { stateVersion: runtime.stateVersion };
     }
     if (event.type === 'history.get') {
-      const finished = runtime.authority?.state.phase === 'finished';
+      const finished =
+        runtime.authority?.state.phase === 'finished' || runtime.roundScored;
       const history = await this.#history.getVisitorHistory(
         identity.visitorId,
         20,
@@ -935,12 +946,16 @@ export class RealtimeService {
               [players[1]!, players[3]!],
             ]
           : [];
-      this.#scheduleTurn(runtime);
+      this.#beginPresentation(runtime);
       return { stateVersion: runtime.stateVersion, changedRoom: runtime };
     }
     if (event.type === 'game.action') {
       if (!runtime.authority)
         throw new RoomServiceError('INVALID_INPUT', '游戏尚未开始');
+      // The callback activates the turn atomically; a packet at the time boundary
+      // must not cancel that callback while leaving stale presentation metadata.
+      if (runtime.series?.presentation)
+        throw new ProtocolFailure('ILLEGAL_ACTION', '发牌演出中，请稍候');
       const consumesTurn = event.action.kind !== 'exchange-trump-two';
       const previousAuthority = runtime.authority;
       runtime.authority = this.#applyAction(
@@ -948,7 +963,9 @@ export class RealtimeService {
         identity.playerId,
         event.action,
       );
-      runtime.authority = this.#continueRanking(runtime, runtime.authority);
+      runtime.authority = this.#resolveAuthority(
+        this.#continueRanking(runtime, runtime.authority),
+      );
       if (
         event.action.kind === 'pass' &&
         previousAuthority.state.table.length > 0 &&
@@ -961,7 +978,7 @@ export class RealtimeService {
         );
       }
       runtime.stateVersion += 1;
-      if (consumesTurn) this.#scheduleTurn(runtime);
+      if (consumesTurn) this.#afterAction(runtime, previousAuthority);
       else if (runtime.authority.state.phase === 'finished')
         this.#cancelTimer(runtime);
       await this.#settleIfFinished(runtime);
@@ -1009,7 +1026,7 @@ export class RealtimeService {
         const { multiplier, multiplierReason } = chooseRoundMultiplier(
           roundNumber,
           streak,
-          this.#random,
+          this.#multiplierRandom,
         );
         const players = [...runtime.snapshot.players]
           .sort((a, b) => a.seat - b.seat)
@@ -1029,12 +1046,14 @@ export class RealtimeService {
             choice: 'pending' as const,
           })),
           finishOrder: [],
+          lastRoundResult: undefined,
+          presentation: undefined,
         };
         runtime.startedAt = new Date(this.#clock.now()).toISOString();
         runtime.settled = false;
         runtime.roundScored = false;
         runtime.roundFinishOrder = [];
-        this.#scheduleTurn(runtime);
+        this.#beginPresentation(runtime);
       } else {
         runtime.series = { ...runtime.series, continueVotes };
       }
@@ -1108,7 +1127,13 @@ export class RealtimeService {
       (_, offset) =>
         previous.players[(start + offset + 1) % previous.players.length]!,
     ).filter((player) => player !== finisher);
-    for (const player of order) {
+    const replenishStart = previous.players.indexOf(previous.roundAttacker);
+    const replenishOrder = Array.from(
+      { length: previous.players.length },
+      (_, offset) =>
+        previous.players[(replenishStart + offset) % previous.players.length]!,
+    ).filter((player) => player !== finisher);
+    for (const player of replenishOrder) {
       const hand = hands.get(player)!;
       while (hand.length < 8 && stock.length) hand.push(stock.shift()!);
     }
@@ -1185,26 +1210,31 @@ export class RealtimeService {
       for (const member of outcome.winners) winners.add(member);
     } else {
       losers.add(playerId);
-      for (const player of room.authority.state.players)
-        if (player !== playerId) winners.add(player);
+      for (const player of room.series.participants)
+        if (player.playerId !== playerId) winners.add(player.playerId);
     }
     room.series = this.#withHonors(
       room,
       finalizeSeries(
-        scoreSeriesRound(
-          room.series,
-          room.snapshot.config.playerCount,
-          winners,
-          losers,
-        ),
+        room.roundScored
+          ? room.series
+          : scoreSeriesRound(
+              room.series,
+              room.snapshot.config.playerCount,
+              winners,
+              losers,
+              'forfeit',
+            ),
       ),
     );
+    room.series = { ...room.series, presentation: undefined };
     room.roundScored = true;
     room.stateVersion += 1;
     this.#cancelTimer(room);
     for (const handle of room.disconnectForfeits.values())
       this.#clock.cancel(handle);
     room.disconnectForfeits.clear();
+    await this.#settleIfFinished(room);
     await this.#history.saveSeries?.({
       seriesId: `series-${room.snapshot.roomId}`,
       roomId: room.snapshot.roomId,
@@ -1354,7 +1384,8 @@ export class RealtimeService {
       room.settled ||
       room.settling ||
       !room.authority ||
-      room.authority.state.phase !== 'finished'
+      (room.authority.state.phase !== 'finished' &&
+        room.series?.lastRoundResult?.reason !== 'forfeit')
     )
       return;
     room.settling = true;
@@ -1382,7 +1413,8 @@ export class RealtimeService {
       playerCount: room.snapshot.config.playerCount,
       startedAt: room.startedAt ?? new Date(this.#clock.now()).toISOString(),
       endedAt: new Date(this.#clock.now()).toISOString(),
-      reason: game.resultReason!,
+      reason: room.series?.lastRoundResult?.reason ?? game.resultReason!,
+      roundResult: room.series?.lastRoundResult,
       participants: room.snapshot.players.map((player) => {
         const publicGamePlayer = game.players.find(
           (item) => item.playerId === player.playerId,
@@ -1391,13 +1423,22 @@ export class RealtimeService {
           playerId: player.playerId,
           nickname: player.nickname,
           seat: player.seat,
-          team: publicGamePlayer.team,
-          outcome: settlementOutcome(
-            room.snapshot.config.playerCount,
-            player.playerId,
-            winners,
-            losers,
-          ),
+          team:
+            room.snapshot.config.playerCount === 4
+              ? player.seat % 2 === 0
+                ? 'team-a'
+                : 'team-b'
+              : publicGamePlayer.team,
+          outcome:
+            room.series?.lastRoundResult?.participants.find(
+              (p) => p.playerId === player.playerId,
+            )?.outcome ??
+            settlementOutcome(
+              room.snapshot.config.playerCount,
+              player.playerId,
+              winners,
+              losers,
+            ),
         };
       }),
     };
@@ -1427,7 +1468,7 @@ export class RealtimeService {
     const losers = new Set(game.loserPlayerIds ?? []);
     if (
       room.snapshot.config.playerCount === 4 &&
-      room.roundFinishOrder.length > 0 &&
+      game.resultReason === 'stuck-with-jokers' &&
       losers.size > 0
     ) {
       const outcome = resolveFourPlayerTeamOutcome(
@@ -1440,16 +1481,17 @@ export class RealtimeService {
       for (const player of outcome.losers) losers.add(player);
       for (const player of outcome.winners) explicitWinners.add(player);
     }
-    if (room.authority.mode === 2 && explicitWinners.size === 1) {
+    if (room.snapshot.config.playerCount === 2 && explicitWinners.size === 1) {
       for (const item of game.players)
         if (!explicitWinners.has(item.playerId)) losers.add(item.playerId);
     }
     if (
-      room.authority.mode === 3 &&
-      explicitWinners.size === 0 &&
+      room.snapshot.config.playerCount === 3 &&
+      game.resultReason === 'stuck-with-jokers' &&
       losers.size === 1
     ) {
-      for (const item of game.players)
+      explicitWinners.clear();
+      for (const item of room.series.participants)
         if (!losers.has(item.playerId)) explicitWinners.add(item.playerId);
     }
     const ranked =
@@ -1504,6 +1546,100 @@ export class RealtimeService {
     };
   }
 
+  #resolveAuthority(authority: AuthorityState): AuthorityState {
+    if (authority.mode === 2)
+      return { ...authority, state: resolveTwoPlayerState(authority.state) };
+    if (authority.mode === 3)
+      return { ...authority, state: resolveThreePlayerState(authority.state) };
+    return { ...authority, state: resolveFourPlayerState(authority.state) };
+  }
+
+  #afterAction(room: RealtimeRoom, previous: AuthorityState) {
+    room.authority = this.#resolveAuthority(room.authority!);
+    if (
+      room.authority.state.phase !== 'finished' &&
+      room.authority.state.stock.length < previous.state.stock.length
+    )
+      this.#beginPresentation(room, previous);
+    else this.#scheduleTurn(room);
+  }
+
+  #beginPresentation(room: RealtimeRoom, previous?: AuthorityState) {
+    if (!this.#presentationEnabled) {
+      this.#scheduleTurn(room);
+      return;
+    }
+    if (
+      !room.series ||
+      !room.authority ||
+      room.authority.state.phase === 'finished'
+    ) {
+      this.#scheduleTurn(room);
+      return;
+    }
+    this.#cancelTimer(room);
+    const state = room.authority.state;
+    const players = [...room.snapshot.players]
+      .sort((a, b) => a.seat - b.seat)
+      .map((p) => p.playerId);
+    let recipients: PlayerId[];
+    if (!previous) recipients = Array.from({ length: 8 }, () => players).flat();
+    else {
+      const drawn = previous.state.stock.slice(
+        0,
+        previous.state.stock.length - state.stock.length,
+      );
+      recipients = drawn
+        .map((card) =>
+          state.players.find((id) =>
+            state.hands.get(id)?.some((c) => c.id === card.id),
+          )!,
+        )
+        .filter(Boolean);
+    }
+    if (!recipients.length) {
+      this.#scheduleTurn(room);
+      return;
+    }
+    const start = this.#clock.now();
+    const intro = previous
+      ? 0
+      : room.series.multiplierReason === 'easter-egg'
+        ? 1900
+        : 650;
+    const stepMs = previous ? 140 : 100;
+    const ready = start + intro + recipients.length * stepMs + 350;
+    room.series = {
+      ...room.series,
+      presentation: {
+        id: room.series.roundNumber + '-' + room.stateVersion,
+        kind: previous ? 'refill' : 'initial',
+        startsAt: new Date(start).toISOString(),
+        dealsAt: new Date(start + intro).toISOString(),
+        readyAt: new Date(ready).toISOString(),
+        stepMs,
+        stockBefore: state.stock.length + recipients.length,
+        recipients,
+        beforeCounts: players.map((playerId) => ({
+          playerId,
+          count:
+            (state.hands.get(playerId)?.length ?? 0) -
+            recipients.filter((id) => id === playerId).length,
+        })),
+      },
+    };
+    const generation = room.timerGeneration;
+    room.timerHandle = this.#clock.schedule(ready - start, () => {
+      if (room.timerGeneration !== generation) return;
+      room.timerHandle = undefined;
+      if (room.series)
+        room.series = { ...room.series, presentation: undefined };
+      room.stateVersion += 1;
+      this.#scheduleTurn(room);
+      this.#broadcast(room);
+    });
+  }
+
   #cancelTimer(room: RealtimeRoom) {
     room.timerGeneration += 1;
     if (room.timerHandle !== undefined) this.#clock.cancel(room.timerHandle);
@@ -1522,8 +1658,15 @@ export class RealtimeService {
     room.turnDeadline = new Date(this.#clock.now() + delay).toISOString();
     room.timerHandle = this.#clock.schedule(delay, () => {
       if (room.timerGeneration !== generation || !room.authority) return;
+      room.authority = this.#resolveAuthority(room.authority);
       const state = room.authority.state;
-      if (state.phase === 'finished') return this.#cancelTimer(room);
+      if (state.phase === 'finished') {
+        this.#cancelTimer(room);
+        room.stateVersion += 1;
+        void this.#settleIfFinished(room);
+        this.#broadcast(room);
+        return;
+      }
       try {
         const timedAction =
           state.phase === 'awaiting-defense'
@@ -1547,6 +1690,7 @@ export class RealtimeService {
                   if (!card) throw new Error('No legal opening card');
                   return { kind: 'play-card' as const, cardId: card.id };
                 })();
+        const previousAuthority = room.authority;
         const previousTableLength = state.table.length;
         const previousDefender = state.defender;
         room.authority = this.#applyAction(
@@ -1554,7 +1698,9 @@ export class RealtimeService {
           state.phase === 'awaiting-defense' ? state.defender : state.actor,
           timedAction,
         );
-        room.authority = this.#continueRanking(room, room.authority);
+        room.authority = this.#resolveAuthority(
+          this.#continueRanking(room, room.authority),
+        );
         if (
           timedAction.kind === 'pass' &&
           previousTableLength > 0 &&
@@ -1565,7 +1711,7 @@ export class RealtimeService {
             (room.defenseWins.get(previousDefender) ?? 0) + 1,
           );
         room.stateVersion += 1;
-        this.#scheduleTurn(room);
+        this.#afterAction(room, previousAuthority);
         void this.#settleIfFinished(room);
         this.#broadcast(room);
       } catch {

@@ -15,6 +15,12 @@ import type {
 } from '@8cards/shared';
 import { Badge, Button, Panel, PlayerSeat, PlayingCard } from '@8cards/ui';
 import type { LobbyConnection } from './realtime-client.js';
+import { ReactionIcon } from './reaction-icon.js';
+import {
+  usePresentation,
+  PresentationStage,
+  RoundRanking,
+} from './round-presentation.js';
 import { avatarImage } from './avatars.js';
 import { GameAudio, type AudioPreferences } from './audio-system.js';
 import {
@@ -205,7 +211,7 @@ export const resultCopy = (game: GamePublicState, viewerPlayerId: PlayerId) => {
         : lost || (winners.length > 0 && !won)
           ? '本局因你触发憋王结束。'
           : '本局因对手触发憋王结束。'
-      : '本局由玩家率先出完手牌结束。';
+      : '所有参赛者名次已确定，分数由服务端结算。';
   return { title, detail };
 };
 
@@ -234,6 +240,8 @@ export function GameTable({
 }) {
   const game = view.public.game!;
   const series = view.public.series;
+  const progress = usePresentation(series);
+  const stockCount = progress?.stock ?? game.stockCount;
   const [selected, setSelected] = useState<CardId>();
   const [pending, setPending] = useState(false);
   const [pendingVersion, setPendingVersion] = useState<number>();
@@ -253,6 +261,15 @@ export function GameTable({
   const [drawMotions, setDrawMotions] = useState<
     ReturnType<typeof describeDraws>
   >([]);
+  useEffect(() => {
+    if (progress && progress.completed > 0)
+      audio.current.play(
+        'draw',
+        game.gameId + ':' + progress.p.id + ':' + progress.completed,
+      );
+    if (progress && series?.multiplierReason === 'easter-egg')
+      audio.current.play('ranking', 'egg:' + game.gameId + ':' + progress.p.id);
+  }, [progress?.p.id, progress?.completed, series?.multiplierReason]);
   const previousGame = useRef(game);
   const [history, setHistory] =
     useState<import('./realtime-client.js').VisitorHistory>();
@@ -260,12 +277,24 @@ export function GameTable({
     kind: 'draw' | 'play' | 'collect';
     version: number;
   }>();
+  const [actionEcho, setActionEcho] = useState<{
+    kind: 'pass' | 'collect' | 'discard';
+    position: string;
+    count: number;
+    key: number;
+  }>();
+  useEffect(() => {
+    if (!actionEcho) return;
+    const timer = window.setTimeout(() => setActionEcho(undefined), 700);
+    return () => window.clearTimeout(timer);
+  }, [actionEcho]);
   const previousMotion = useRef({
     stockCount: game.stockCount,
     tableCount: game.table.length,
   });
   useEffect(() => {
     audio.current.setPreferences(audioPreferences);
+    void audio.current.unlock();
     const unlock = () => void audio.current.unlock();
     window.addEventListener('pointerdown', unlock, { once: true });
     window.addEventListener('keydown', unlock, { once: true });
@@ -274,11 +303,18 @@ export function GameTable({
       window.removeEventListener('keydown', unlock);
     };
   }, [audioPreferences]);
+  useEffect(() => () => audio.current.dispose(), []);
   const chatInitialized = useRef(false);
   const seenChatVersion = useRef(0);
   const hand = useMemo(
-    () => sortHand(view.private.hand, game.trumpSuit),
-    [view.private.hand, game.trumpSuit],
+    () =>
+      sortHand(
+        progress
+          ? view.private.hand.slice(0, progress.count(view.viewerPlayerId))
+          : view.private.hand,
+        game.trumpSuit,
+      ),
+    [view.private.hand, game.trumpSuit, progress?.completed, progress?.p.id],
   );
   const pairs = useMemo(() => pairTable(game.table), [game.table]);
   const legal = useMemo(
@@ -303,6 +339,7 @@ export function GameTable({
     connectionState !== 'started' ||
     !connection ||
     pending ||
+    !!progress ||
     game.phase === 'finished' ||
     (series !== undefined && series.phase !== 'playing');
   const unresolved = [...pairs].reverse().find((pair) => !pair.defense)?.attack
@@ -378,6 +415,39 @@ export function GameTable({
     const previous = previousMotion.current;
     const priorGame = previousGame.current;
     const draws = describeDraws(priorGame, game, view.viewerPlayerId);
+    if (priorGame.gameId === game.gameId && priorGame.table.length > 0) {
+      if (game.table.length === 0) {
+        const id = priorGame.defenderId!;
+        const before = priorGame.players.find(
+          (p) => p.playerId === id,
+        )!.handCount;
+        const after =
+          game.players.find((p) => p.playerId === id)?.handCount ?? 0;
+        const drawn =
+          series?.presentation?.recipients.filter((p) => p === id).length ?? 0;
+        setActionEcho({
+          kind: after - drawn > before ? 'collect' : 'discard',
+          position: seatPositions.get(id) ?? 'top',
+          count: priorGame.table.length,
+          key: view.public.stateVersion,
+        });
+      } else if (
+        priorGame.currentActorId !== game.currentActorId &&
+        priorGame.table.length === game.table.length &&
+        game.phase === 'attacking'
+      ) {
+        setActionEcho({
+          kind: 'pass',
+          position: seatPositions.get(priorGame.currentActorId!) ?? 'self',
+          count: 0,
+          key: view.public.stateVersion,
+        });
+        audio.current.play(
+          'pass',
+          game.gameId + ':' + view.public.stateVersion,
+        );
+      }
+    }
     previousGame.current = game;
     setDrawMotions(draws);
     let kind: 'draw' | 'play' | 'collect' | undefined;
@@ -408,7 +478,7 @@ export function GameTable({
               ? 'collect'
               : 'pass'
             : 'draw';
-      audio.current.play(cue, String(view.public.stateVersion));
+      audio.current.play(cue, game.gameId + ':' + view.public.stateVersion);
     }
   }, [game.stockCount, game.table.length, view.public.stateVersion]);
 
@@ -439,8 +509,9 @@ export function GameTable({
       void submit({ kind: 'play-card', cardId: selected });
   };
   const cardAction = legal.has('beat-card') ? '压牌' : '出牌';
-  const statusText =
-    game.phase === 'finished'
+  const statusText = progress
+    ? '正在按座次逐张发牌 · 完成后开始计时'
+    : game.phase === 'finished'
       ? '本局已结束'
       : game.currentActorId === view.viewerPlayerId
         ? `轮到你${legal.has('beat-card') ? '压牌' : '出牌'}`
@@ -451,11 +522,12 @@ export function GameTable({
   useEffect(() => {
     if (
       game.currentActorId === view.viewerPlayerId &&
-      game.phase !== 'finished'
+      game.phase !== 'finished' &&
+      game.turnDeadline !== null
     )
       audio.current.play(
         'your-turn',
-        `${view.public.stateVersion}:${game.currentActorId}`,
+        `${game.gameId}:${game.turnDeadline}:${game.currentActorId}`,
       );
   }, [
     game.currentActorId,
@@ -465,19 +537,23 @@ export function GameTable({
   ]);
   useEffect(() => {
     if (remaining !== null && remaining <= 5 && remaining > 0)
-      audio.current.play('countdown', `${game.turnDeadline}:${remaining}`);
+      audio.current.play(
+        'countdown',
+        `${game.gameId}:${game.turnDeadline}:${remaining}`,
+      );
   }, [game.turnDeadline, remaining]);
   useEffect(() => {
     if (series?.phase === 'series-result') {
-      audio.current.play('ranking', `series:${view.public.stateVersion}`);
+      audio.current.play('ranking', `series:${game.gameId}`);
       return;
     }
     if (game.phase !== 'finished') return;
-    const won = game.winnerPlayerIds?.includes(view.viewerPlayerId) ?? false;
-    audio.current.play(
-      won ? 'win' : 'lose',
-      `finish:${view.public.stateVersion}`,
-    );
+    const won =
+      series?.lastRoundResult?.participants.find(
+        (p) => p.playerId === view.viewerPlayerId,
+      )?.outcome === 'win' ||
+      (game.winnerPlayerIds?.includes(view.viewerPlayerId) ?? false);
+    audio.current.play(won ? 'win' : 'lose', `finish:${game.gameId}`);
   }, [
     game.phase,
     game.winnerPlayerIds,
@@ -488,7 +564,7 @@ export function GameTable({
 
   return (
     <section
-      className={`game-table game-table--${view.public.room.config.playerCount} ${game.currentActorId === view.viewerPlayerId ? 'is-self-turn' : ''}`}
+      className={`game-table game-table--${view.public.room.config.playerCount} ${!progress && game.phase !== 'finished' && series?.phase !== 'series-result' && game.currentActorId === view.viewerPlayerId ? 'is-self-turn' : ''}`}
       aria-label={`${view.public.room.config.playerCount}人游戏牌桌`}
     >
       <header className="game-hud">
@@ -503,7 +579,12 @@ export function GameTable({
             </span>
           ) : null}
           <span>主牌 {suitName(game.trumpSuit)}</span>
-          <span>牌墩 {game.stockCount} 张</span>
+          {view.public.room.config.playerCount === 4 &&
+          game.players.filter((player) => player.handCount > 0).length < 4 &&
+          game.phase !== 'finished' ? (
+            <span>个人排名阶段 · 原队伍保留计分</span>
+          ) : null}
+          <span>牌墩 {stockCount} 张</span>
           <span>
             阶段{' '}
             {game.phase === 'attacking'
@@ -543,10 +624,10 @@ export function GameTable({
       ) : null}
       {reaction ? (
         <div
-          className={`reaction-burst reaction-burst--${reaction.reactionId}`}
+          className={`reaction-burst reaction-burst--${reaction.reactionId} reaction-position--${seatPositions.get(reaction.senderPlayerId ?? '') ?? 'top'}`}
           role="status"
         >
-          <i aria-hidden="true" />
+          <ReactionIcon id={reaction.reactionId} />
           <strong>{reactionLabel[reaction.reactionId]}</strong>
         </div>
       ) : null}
@@ -573,9 +654,11 @@ export function GameTable({
                     player.nickname.slice(0, 1)
                   )
                 }
-                cards={publicPlayer.handCount}
+                cards={
+                  progress?.count(player.playerId) ?? publicPlayer.handCount
+                }
                 online={player.connection === 'online'}
-                active={game.currentActorId === player.playerId}
+                active={!progress && game.currentActorId === player.playerId}
                 role={playerRoleLabel(publicPlayer, game, selfGame.team)}
               />
             </div>
@@ -616,7 +699,7 @@ export function GameTable({
             <button
               type="button"
               key={phrase}
-              onClick={() => void connection?.chat(phrase)}
+              onClick={() => void connection?.chat(phrase).catch(() => {})}
             >
               {phrase}
             </button>
@@ -628,12 +711,9 @@ export function GameTable({
               type="button"
               key={item}
               aria-label={reactionLabel[item]}
-              onClick={() => void connection?.reaction(item)}
+              onClick={() => void connection?.reaction(item).catch(() => {})}
             >
-              <i
-                className={`reaction-icon reaction-icon--${item}`}
-                aria-hidden="true"
-              />
+              <ReactionIcon id={item} />
               <span>{reactionLabel[item]}</span>
             </button>
           ))}
@@ -666,17 +746,48 @@ export function GameTable({
         </form>
       </aside>
 
+      {actionEcho ? (
+        <div
+          key={actionEcho.key}
+          className={
+            'action-echo action-echo--' +
+            actionEcho.kind +
+            ' action-echo--' +
+            actionEcho.position
+          }
+          aria-label={
+            actionEcho.kind === 'pass'
+              ? '过牌反馈'
+              : actionEcho.kind === 'collect'
+                ? '收牌汇拢'
+                : '防守成功弃牌'
+          }
+        >
+          {actionEcho.kind === 'pass' ? (
+            '过牌'
+          ) : (
+            <>
+              {Array.from({ length: Math.min(8, actionEcho.count) }, (_, i) => (
+                <i key={i} style={{ '--echo-index': i } as CSSProperties} />
+              ))}
+              <span>{actionEcho.kind === 'collect' ? '收牌' : '防守成功'}</span>
+            </>
+          )}
+        </div>
+      ) : null}
+      <PresentationStage series={series} positions={seatPositions} />
       <div className="center-table">
-        {drawMotions.map((draw) => (
-          <i
-            className={`draw-flight draw-flight--${seatPositions.get(draw.playerId) ?? 'self'}`}
-            key={`${view.public.stateVersion}-${draw.playerId}`}
-            aria-label={`${draw.privateCards ? '你' : '其他玩家'}补牌 ${draw.count} 张`}
-          >
-            {draw.count}
-          </i>
-        ))}
-        {motionCue ? (
+        {!series?.presentation &&
+          drawMotions.map((draw) => (
+            <i
+              className={`draw-flight draw-flight--${seatPositions.get(draw.playerId) ?? 'self'}`}
+              key={`${view.public.stateVersion}-${draw.playerId}`}
+              aria-label={`${draw.privateCards ? '你' : '其他玩家'}补牌 ${draw.count} 张`}
+            >
+              {draw.count}
+            </i>
+          ))}
+        {motionCue?.kind === 'play' ? (
           <div
             className={`table-motion table-motion--${motionCue.kind}`}
             key={`${motionCue.kind}-${motionCue.version}`}
@@ -688,20 +799,28 @@ export function GameTable({
           </div>
         ) : null}
         <div
-          className={`turn-clock ${remaining !== null && remaining <= 5 ? 'urgent' : ''}`}
+          className={`turn-clock ${progress ? 'is-dealing' : ''} ${remaining !== null && remaining <= 5 ? 'urgent' : ''}`}
         >
-          <strong>{remaining === 0 ? '…' : (remaining ?? '—')}</strong>
-          <span>{remaining === 0 ? '等待服务器处理' : '秒'}</span>
+          <strong>
+            {remaining === 0 ? '…' : (remaining ?? (progress ? '发牌' : '—'))}
+          </strong>
+          <span>
+            {remaining === 0
+              ? '等待服务器处理'
+              : progress
+                ? '计时未开始'
+                : '秒'}
+          </span>
         </div>
         <div
-          className={`stock-stack ${game.stockCount === 0 ? 'is-empty' : ''}`}
-          aria-label={`牌墩剩余 ${game.stockCount} 张`}
+          className={`stock-stack ${progress?.p.kind === 'initial' ? 'is-shuffling' : ''} ${stockCount === 0 ? 'is-empty' : ''}`}
+          aria-label={`牌墩剩余 ${stockCount} 张`}
         >
           <div
             className="stock-cards"
             style={
               {
-                '--stock-depth': Math.min(6, Math.ceil(game.stockCount / 5)),
+                '--stock-depth': Math.min(6, Math.ceil(stockCount / 5)),
               } as CSSProperties
             }
           >
@@ -711,10 +830,10 @@ export function GameTable({
             <b>八</b>
           </div>
           <span>
-            牌墩 <strong>{game.stockCount}</strong>
+            牌墩 <strong>{stockCount}</strong>
           </span>
         </div>
-        <div className="indicator-card">
+        <div className="indicator-card" key={game.gameId}>
           <span>公开明牌</span>
           {game.exposedCard ? (
             <CardView card={game.exposedCard} compact />
@@ -758,7 +877,7 @@ export function GameTable({
         </p>
       </div>
 
-      <div className="self-zone">
+      <div className="self-zone" data-player-id={view.viewerPlayerId}>
         <div className="self-summary">
           <strong>{self?.nickname ?? '本人'}</strong>
           <span>
@@ -863,55 +982,28 @@ export function GameTable({
             <h2>
               {series?.phase === 'series-result' && game.phase !== 'finished'
                 ? '房间赛已结束'
-                : result.title}
+                : series?.lastRoundResult
+                  ? '第 ' + series.lastRoundResult.roundNumber + ' 局排名'
+                  : result.title}
             </h2>
             <p>
               {series?.phase === 'series-result' && game.phase !== 'finished'
                 ? '有玩家主动退出或掉线宽限到期，本局已按弃权计分。'
-                : result.detail}
+                : series?.lastRoundResult
+                  ? '本局增减与累计总分 · 服务端权威结算'
+                  : result.detail}
             </p>
-            <div className="settlement-participants">
-              {view.public.room.players.map((player) => (
-                <span key={player.playerId}>
-                  {player.nickname} ·{' '}
-                  {series?.finishOrder?.includes(player.playerId)
-                    ? `第 ${series.finishOrder.indexOf(player.playerId) + 1} 名`
-                    : game.winnerPlayerIds?.includes(player.playerId)
-                      ? '胜'
-                      : game.loserPlayerIds?.includes(player.playerId)
-                        ? '负'
-                        : view.public.room.config.playerCount === 2
-                          ? '负'
-                          : '未决'}
-                  {series
-                    ? ` · 总分 ${series.participants.find((item) => item.playerId === player.playerId)?.score ?? 0}`
-                    : ''}
-                </span>
-              ))}
-            </div>
-            {series ? (
-              <div className="round-score-grid">
-                {series.participants.map((item) => {
-                  const player = view.public.room.players.find(
-                    (p) => p.playerId === item.playerId,
-                  );
-                  return (
-                    <div key={item.playerId}>
-                      <span>{player?.nickname}</span>
-                      <strong>
-                        {item.score >= 0 ? '+' : ''}
-                        {item.score}
-                      </strong>
-                      <small>
-                        {series.multiplier} 倍局 · {item.wins}胜 {item.losses}负
-                      </small>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
+            <RoundRanking series={series} players={view.public.room.players} />
             {series?.phase === 'continue-vote' ? (
               <div className="series-vote">
+                <p>
+                  你的选择：
+                  {series.continueVotes.find(
+                    (vote) => vote.playerId === view.viewerPlayerId,
+                  )?.choice === 'continue'
+                    ? '继续下一局'
+                    : '尚未选择'}
+                </p>
                 <p>
                   已选择继续{' '}
                   {

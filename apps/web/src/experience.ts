@@ -7,6 +7,11 @@ export const QUICK_PHRASES = [
   '这局有点意思。',
   '合作愉快！',
   '承让承让。',
+  '豪到你了吗',
+  '惊天大孙伯',
+  '这猪÷',
+  '野猪',
+  '我日野猪',
 ] as const;
 
 export const REACTIONS = [

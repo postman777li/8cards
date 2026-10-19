@@ -53,6 +53,88 @@ export const seriesParticipantSchema = z.strictObject({
   currentStreak: z.number().int().nonnegative(),
   titles: z.array(z.enum(['嘉豪之王', '常胜将军', '快刀手', '滴水不漏'])),
 });
+export const roundResultSchema = z
+  .strictObject({
+    roundNumber: z.number().int().positive(),
+    reason: z.enum(['emptied-hand', 'stuck-with-jokers', 'forfeit']),
+    participants: z
+      .array(
+        z.strictObject({
+          playerId: playerIdSchema,
+          rank: z.number().int().min(1).max(4),
+          baseScore: z.number().int(),
+          multiplier: z.number().int().min(1).max(4),
+          delta: z.number().int(),
+          totalScore: z.number().int(),
+          outcome: z.enum(['win', 'loss', 'unresolved']),
+        }),
+      )
+      .min(2)
+      .max(4),
+  })
+  .superRefine((value, context) => {
+    const rows = value.participants;
+    const ranks = rows.map((row) => row.rank).sort((a, b) => a - b);
+    if (
+      new Set(rows.map((row) => row.playerId)).size !== rows.length ||
+      rows.some(
+        (row) =>
+          row.delta !== row.baseScore * row.multiplier ||
+          row.multiplier !== rows[0]!.multiplier,
+      ) ||
+      rows.reduce((sum, row) => sum + row.delta, 0) !== 0 ||
+      ranks.some(
+        (rank, index) =>
+          rank !==
+          (index > 0 && ranks[index - 1] === rank
+            ? ranks[index - 1]
+            : index + 1),
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Round result must have unique players, competition ranks and zero-sum multiplied scores',
+      });
+    }
+  });
+export const presentationSchema = z
+  .strictObject({
+    id: z.string().max(100),
+    kind: z.enum(['initial', 'refill']),
+    startsAt: timestampSchema,
+    dealsAt: timestampSchema,
+    readyAt: timestampSchema,
+    stepMs: z.number().int().min(40).max(500),
+    stockBefore: z.number().int().min(0).max(54),
+    beforeCounts: z
+      .array(
+        z.strictObject({
+          playerId: playerIdSchema,
+          count: z.number().int().min(0).max(54),
+        }),
+      )
+      .max(4),
+    recipients: z.array(playerIdSchema).max(54),
+  })
+  .superRefine((value, context) => {
+    if (
+      Date.parse(value.dealsAt) < Date.parse(value.startsAt) ||
+      Date.parse(value.readyAt) <
+        Date.parse(value.dealsAt) + value.recipients.length * value.stepMs ||
+      value.stockBefore < value.recipients.length ||
+      new Set(value.beforeCounts.map((row) => row.playerId)).size !==
+        value.beforeCounts.length ||
+      value.recipients.some(
+        (id) => !value.beforeCounts.some((row) => row.playerId === id),
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Invalid authoritative presentation sequence or time boundary',
+      });
+    }
+  });
 export const roomSeriesSchema = z.strictObject({
   phase: z.enum(['playing', 'continue-vote', 'series-result']),
   roundNumber: z.number().int().positive(),
@@ -69,6 +151,8 @@ export const roomSeriesSchema = z.strictObject({
     .min(2)
     .max(4),
   finishOrder: z.array(playerIdSchema).max(4).optional(),
+  lastRoundResult: roundResultSchema.optional(),
+  presentation: presentationSchema.optional(),
 });
 export const publicSnapshotSchema = z.strictObject({
   stateVersion: stateVersionSchema,

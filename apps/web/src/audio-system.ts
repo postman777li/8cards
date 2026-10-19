@@ -21,7 +21,7 @@ export const clampVolume = (value: number) =>
   Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0.45));
 
 export class GameAudio {
-  #context?: AudioContext;
+  #context: AudioContext | undefined;
   #preferences: AudioPreferences;
   #played = new Set<string>();
 
@@ -30,6 +30,22 @@ export class GameAudio {
       ...preferences,
       volume: clampVolume(preferences.volume),
     };
+    try {
+      const cached: unknown = JSON.parse(
+        sessionStorage.getItem('8cards:audio:played') ?? '[]',
+      );
+      if (Array.isArray(cached))
+        this.#played = new Set(
+          cached
+            .filter(
+              (key): key is string =>
+                typeof key === 'string' && key.length <= 300,
+            )
+            .slice(-128),
+        );
+    } catch {
+      // Storage is optional, including in private browsing and server rendering.
+    }
   }
 
   setPreferences(preferences: AudioPreferences) {
@@ -50,6 +66,13 @@ export class GameAudio {
     }
   }
 
+  dispose() {
+    const context = this.#context;
+    this.#context = undefined;
+    if (context) void context.close().catch(() => {});
+    this.#played.clear();
+  }
+
   play(cue: SoundCue, authorityKey?: string) {
     if (
       !this.#preferences.enabled ||
@@ -62,6 +85,14 @@ export class GameAudio {
       this.#played.add(key);
       if (this.#played.size > 128)
         this.#played.delete(this.#played.values().next().value!);
+      try {
+        sessionStorage.setItem(
+          '8cards:audio:played',
+          JSON.stringify([...this.#played]),
+        );
+      } catch {
+        /* Audio remains optional. */
+      }
     }
     const context = this.#context;
     if (!context || context.state !== 'running') return;
